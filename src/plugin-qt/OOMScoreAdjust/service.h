@@ -14,8 +14,6 @@ class Service : public QObject
 
 public:
     explicit Service(QObject *parent = 0);
-
-public Q_SLOTS:
     void InitOOMScoreAdjust();
 };
 
