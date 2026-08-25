@@ -2,57 +2,12 @@
 //
 // SPDX-License-Identifier: LGPL-3.0-or-later
 
-//! 输出设备（Sink）状态、事件处理和设置操作。
+//! 输出设备（Sink）设置操作。
 //!
-//! 不持有 context，所有操作通过 `PulseManager::execute` 复用。
-//! PulseManager 的回调通过 `on_sink_changed` 等函数通知本模块。
+//! 纯操作函数，不保存状态。状态管理在 `manager::registry`。
+//! 所有操作通过 `PulseManager::execute` 复用。
 
-use crate::backend::SinkInfo;
 use super::PulseManager;
-
-/// Sink 运行时状态。
-#[derive(Clone, Debug)]
-pub struct SinkState {
-    pub index: u32,
-    pub name: String,
-    pub description: String,
-    pub mute: bool,
-    pub volume: f64,
-    pub balance: f64,
-}
-
-impl From<&SinkInfo> for SinkState {
-    fn from(info: &SinkInfo) -> Self {
-        Self {
-            index: info.index,
-            name: info.name.clone(),
-            description: info.description.clone(),
-            mute: info.mute,
-            volume: info.volume,
-            balance: info.balance,
-        }
-    }
-}
-
-// ========== 事件 handler ==========
-
-/// PulseManager 回调到达时调用，更新 Sink 状态。
-#[allow(dead_code)]
-pub fn on_sink_changed(_pulse: &PulseManager, _index: u32) {
-    // TODO: 通过 pulse.execute 查询最新 sink info，更新 SinkState，发事件到 channel
-}
-
-#[allow(dead_code)]
-pub fn on_sink_added(_pulse: &PulseManager, _index: u32) {
-    // TODO: 创建 SinkState，发事件到 channel
-}
-
-#[allow(dead_code)]
-pub fn on_sink_removed(_pulse: &PulseManager, _index: u32) {
-    // TODO: 删除 SinkState，发事件到 channel
-}
-
-// ========== 设置操作 ==========
 
 /// 设置 Sink 音量。
 #[allow(dead_code)]
@@ -103,5 +58,16 @@ pub fn set_port(_pulse: &PulseManager, _index: u32, _name: &str) -> Result<(), S
 #[allow(dead_code)]
 pub fn get_meter(_pulse: &PulseManager, _index: u32) -> Result<u32, String> {
     // TODO: 创建 record stream 作为 meter
+    Err("unimplemented".into())
+}
+
+/// 查询 Sink 信息，返回构造 registry 所需字段。
+///
+/// event_loop 收到 SinkAdded/SinkChanged 时调用此函数，
+/// 通过 pulse.execute 查询最新 sink info，构造 SinkState 写入 registry。
+#[allow(dead_code)]
+pub fn query_info(_pulse: &PulseManager, _index: u32) -> Result<crate::manager::registry::SinkState, String> {
+    // TODO: pulse.execute(|ctx, tx| ctx.get_sink_info_by_index(index, callback))
+    //       回调中提取字段构造 SinkState
     Err("unimplemented".into())
 }

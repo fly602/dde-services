@@ -2,57 +2,12 @@
 //
 // SPDX-License-Identifier: LGPL-3.0-or-later
 
-//! 输入设备（Source）状态、事件处理和设置操作。
+//! 输入设备（Source）设置操作。
 //!
-//! 不持有 context，所有操作通过 `PulseManager::execute` 复用。
-//! PulseManager 的回调通过 `on_source_changed` 等函数通知本模块。
+//! 纯操作函数，不保存状态。状态管理在 `manager::registry`。
+//! 所有操作通过 `PulseManager::execute` 复用。
 
-use crate::backend::SourceInfo;
 use super::PulseManager;
-
-/// Source 运行时状态。
-#[derive(Clone, Debug)]
-pub struct SourceState {
-    pub index: u32,
-    pub name: String,
-    pub description: String,
-    pub mute: bool,
-    pub volume: f64,
-    pub balance: f64,
-}
-
-impl From<&SourceInfo> for SourceState {
-    fn from(info: &SourceInfo) -> Self {
-        Self {
-            index: info.index,
-            name: info.name.clone(),
-            description: info.description.clone(),
-            mute: info.mute,
-            volume: info.volume,
-            balance: info.balance,
-        }
-    }
-}
-
-// ========== 事件 handler ==========
-
-/// PulseManager 回调到达时调用，更新 Source 状态。
-#[allow(dead_code)]
-pub fn on_source_changed(_pulse: &PulseManager, _index: u32) {
-    // TODO: 通过 pulse.execute 查询最新 source info，更新 SourceState，发事件到 channel
-}
-
-#[allow(dead_code)]
-pub fn on_source_added(_pulse: &PulseManager, _index: u32) {
-    // TODO: 创建 SourceState，发事件到 channel
-}
-
-#[allow(dead_code)]
-pub fn on_source_removed(_pulse: &PulseManager, _index: u32) {
-    // TODO: 删除 SourceState，发事件到 channel
-}
-
-// ========== 设置操作 ==========
 
 /// 设置 Source 音量。
 #[allow(dead_code)]
@@ -103,5 +58,12 @@ pub fn set_port(_pulse: &PulseManager, _index: u32, _name: &str) -> Result<(), S
 #[allow(dead_code)]
 pub fn get_meter(_pulse: &PulseManager, _index: u32) -> Result<u32, String> {
     // TODO: 创建 record stream 作为 meter
+    Err("unimplemented".into())
+}
+
+/// 查询 Source 信息，返回构造 registry 所需字段。
+#[allow(dead_code)]
+pub fn query_info(_pulse: &PulseManager, _index: u32) -> Result<crate::manager::registry::SourceState, String> {
+    // TODO: pulse.execute(|ctx, tx| ctx.get_source_info_by_index(index, callback))
     Err("unimplemented".into())
 }

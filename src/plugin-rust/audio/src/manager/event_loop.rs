@@ -2,132 +2,134 @@
 //
 // SPDX-License-Identifier: LGPL-3.0-or-later
 
-//! 事件管理器。
+//! 事件循环。
 //!
-//! 在独立线程上消费 `PulseEvent` channel，维护设备索引集合。
-//! 收到增删改事件时更新内部状态并打印日志。
-//! 后续可扩展为更新 DBus 属性、发送信号等。
+//! 在独立线程上消费 `PulseEvent` channel，更新 `DeviceRegistry`。
+//! 后续扩展：查询 pulse 获取最新状态、发 D-Bus 信号、触发策略逻辑。
 
-use std::collections::HashSet;
 use std::sync::Arc;
 use std::thread;
 
 use parking_lot::RwLock;
 
-use super::{PulseEvent, PulseManager};
+use crate::backend::pulse::{PulseEvent, PulseManager};
 
-/// 设备状态集合，由 EventManager 维护。
-#[derive(Default)]
-pub struct DeviceRegistry {
-    pub sinks: HashSet<u32>,
-    pub sources: HashSet<u32>,
-    pub sink_inputs: HashSet<u32>,
-    pub cards: HashSet<u32>,
-}
+use super::registry::DeviceRegistry;
 
-/// 事件管理器，消费 PulseEvent 并更新 DeviceRegistry。
-pub struct EventManager {
-    registry: Arc<RwLock<DeviceRegistry>>,
+/// 事件循环管理器。
+pub struct EventLoop {
     handle: Option<thread::JoinHandle<()>>,
 }
 
-impl EventManager {
+impl EventLoop {
     /// 启动事件消费线程。
     ///
-    /// `pulse` 用于事件 handler 中查询设备详情（后续实现）。
+    /// `pulse` 用于事件处理中查询设备详情（后续实现）。
+    /// `registry` 与 D-Bus 层共享，事件更新写入，D-Bus 读取。
     /// `events` 是 PulseManager 创建时返回的 receiver。
     pub fn start(
         pulse: Arc<PulseManager>,
+        registry: Arc<RwLock<DeviceRegistry>>,
         events: crossbeam_channel::Receiver<PulseEvent>,
     ) -> Self {
-        let registry = Arc::new(RwLock::new(DeviceRegistry::default()));
-        let registry_clone = registry.clone();
-
         let handle = thread::spawn(move || {
             for event in events {
                 match event {
                     PulseEvent::SinkAdded { index } => {
-                        let mut reg = registry_clone.write();
-                        reg.sinks.insert(index);
+                        // TODO: pulse.execute 查询 sink info，写入 registry
+                        let mut reg = registry.write();
                         eprintln!("[dde-audio] sink added: {index}");
+                        // 临时占位：后续替换为真实查询
+                        let _ = &mut reg;
                     }
                     PulseEvent::SinkRemoved { index } => {
-                        let mut reg = registry_clone.write();
+                        let mut reg = registry.write();
                         reg.sinks.remove(&index);
                         eprintln!("[dde-audio] sink removed: {index}");
                     }
                     PulseEvent::SinkChanged { index } => {
+                        // TODO: pulse.execute 查询最新 sink info，更新 registry
+                        // TODO: 发 D-Bus PropertiesChanged 信号
                         eprintln!("[dde-audio] sink changed: {index}");
                     }
                     PulseEvent::SourceAdded { index } => {
-                        let mut reg = registry_clone.write();
-                        reg.sources.insert(index);
+                        // TODO: pulse.execute 查询 source info，写入 registry
+                        let mut reg = registry.write();
                         eprintln!("[dde-audio] source added: {index}");
+                        let _ = &mut reg;
                     }
                     PulseEvent::SourceRemoved { index } => {
-                        let mut reg = registry_clone.write();
+                        let mut reg = registry.write();
                         reg.sources.remove(&index);
                         eprintln!("[dde-audio] source removed: {index}");
                     }
                     PulseEvent::SourceChanged { index } => {
+                        // TODO: pulse.execute 查询最新 source info，更新 registry
+                        // TODO: 发 D-Bus PropertiesChanged 信号
                         eprintln!("[dde-audio] source changed: {index}");
                     }
                     PulseEvent::SinkInputAdded { index } => {
-                        let mut reg = registry_clone.write();
-                        reg.sink_inputs.insert(index);
+                        // TODO: pulse.execute 查询 sink input info，写入 registry
+                        let mut reg = registry.write();
                         eprintln!("[dde-audio] sink input added: {index}");
+                        let _ = &mut reg;
                     }
                     PulseEvent::SinkInputRemoved { index } => {
-                        let mut reg = registry_clone.write();
+                        let mut reg = registry.write();
                         reg.sink_inputs.remove(&index);
                         eprintln!("[dde-audio] sink input removed: {index}");
                     }
                     PulseEvent::SinkInputChanged { index } => {
+                        // TODO: pulse.execute 查询最新 sink input info，更新 registry
                         eprintln!("[dde-audio] sink input changed: {index}");
                     }
                     PulseEvent::CardAdded { index } => {
-                        let mut reg = registry_clone.write();
-                        reg.cards.insert(index);
+                        // TODO: pulse.execute 查询 card info，写入 registry
+                        // TODO: 可能触发 default sink/source 重选
+                        let mut reg = registry.write();
                         eprintln!("[dde-audio] card added: {index}");
+                        let _ = &mut reg;
                     }
                     PulseEvent::CardRemoved { index } => {
-                        let mut reg = registry_clone.write();
+                        let mut reg = registry.write();
                         reg.cards.remove(&index);
                         eprintln!("[dde-audio] card removed: {index}");
+                        // TODO: 可能触发 default sink/source 重选
                     }
                     PulseEvent::CardChanged { index } => {
+                        // TODO: pulse.execute 查询最新 card info，更新 registry
                         eprintln!("[dde-audio] card changed: {index}");
                     }
                     PulseEvent::DefaultSinkChanged { name } => {
+                        let mut reg = registry.write();
+                        reg.default_sink = Some(name.clone());
                         eprintln!("[dde-audio] default sink changed: {name}");
+                        // TODO: 发 D-Bus PropertiesChanged 信号
                     }
                     PulseEvent::DefaultSourceChanged { name } => {
+                        let mut reg = registry.write();
+                        reg.default_source = Some(name.clone());
                         eprintln!("[dde-audio] default source changed: {name}");
+                        // TODO: 发 D-Bus PropertiesChanged 信号
                     }
                     PulseEvent::Server => {
+                        // TODO: 查询 server info（默认 sink/source 可能变了）
                         eprintln!("[dde-audio] server event");
                     }
                 }
             }
-            eprintln!("[dde-audio] event manager thread exited");
+            eprintln!("[dde-audio] event loop thread exited");
             // 保持 pulse 引用存活，防止 mainloop 提前析构
             let _ = &pulse;
         });
 
         Self {
-            registry,
             handle: Some(handle),
         }
     }
-
-    /// 获取设备注册表只读引用。
-    #[allow(dead_code)]
-    pub fn registry(&self) -> &Arc<RwLock<DeviceRegistry>> {
-        &self.registry
-    }
 }
 
-impl Drop for EventManager {
+impl Drop for EventLoop {
     fn drop(&mut self) {
         // channel 关闭后线程自然退出，join 等待结束
         if let Some(handle) = self.handle.take() {

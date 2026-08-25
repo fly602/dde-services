@@ -2,55 +2,12 @@
 //
 // SPDX-License-Identifier: LGPL-3.0-or-later
 
-//! 播放流（SinkInput）状态、事件处理和设置操作。
+//! 播放流（SinkInput）设置操作。
 //!
-//! 不持有 context，所有操作通过 `PulseManager::execute` 复用。
-//! PulseManager 的回调通过 `on_sink_input_changed` 等函数通知本模块。
+//! 纯操作函数，不保存状态。状态管理在 `manager::registry`。
+//! 所有操作通过 `PulseManager::execute` 复用。
 
-use crate::backend::SinkInputInfo;
 use super::PulseManager;
-
-/// SinkInput 运行时状态。
-#[derive(Clone, Debug)]
-pub struct SinkInputState {
-    pub index: u32,
-    pub name: String,
-    pub mute: bool,
-    pub volume: f64,
-    pub balance: f64,
-}
-
-impl From<&SinkInputInfo> for SinkInputState {
-    fn from(info: &SinkInputInfo) -> Self {
-        Self {
-            index: info.index,
-            name: info.name.clone(),
-            mute: info.mute,
-            volume: info.volume,
-            balance: info.balance,
-        }
-    }
-}
-
-// ========== 事件 handler ==========
-
-/// PulseManager 回调到达时调用，更新 SinkInput 状态。
-#[allow(dead_code)]
-pub fn on_sink_input_changed(_pulse: &PulseManager, _index: u32) {
-    // TODO: 通过 pulse.execute 查询最新 sink input info，更新 SinkInputState，发事件到 channel
-}
-
-#[allow(dead_code)]
-pub fn on_sink_input_added(_pulse: &PulseManager, _index: u32) {
-    // TODO: 创建 SinkInputState，发事件到 channel
-}
-
-#[allow(dead_code)]
-pub fn on_sink_input_removed(_pulse: &PulseManager, _index: u32) {
-    // TODO: 删除 SinkInputState，发事件到 channel
-}
-
-// ========== 设置操作 ==========
 
 /// 设置 SinkInput 音量。
 #[allow(dead_code)]
@@ -87,5 +44,12 @@ pub fn set_balance(
 #[allow(dead_code)]
 pub fn set_fade(_pulse: &PulseManager, _index: u32, _value: f64) -> Result<(), String> {
     // TODO: 计算新 cvol 后 set_sink_input_volume
+    Err("unimplemented".into())
+}
+
+/// 查询 SinkInput 信息，返回构造 registry 所需字段。
+#[allow(dead_code)]
+pub fn query_info(_pulse: &PulseManager, _index: u32) -> Result<crate::manager::registry::SinkInputState, String> {
+    // TODO: pulse.execute(|ctx, tx| ctx.get_sink_input_info(index, callback))
     Err("unimplemented".into())
 }

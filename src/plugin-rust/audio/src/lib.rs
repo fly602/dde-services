@@ -12,7 +12,7 @@
 
 mod abi;
 mod backend;
-mod dbus;
+mod manager;
 
 use core::ffi::c_void;
 use std::panic::{AssertUnwindSafe, catch_unwind};
@@ -20,9 +20,8 @@ use std::panic::{AssertUnwindSafe, catch_unwind};
 use zbus::blocking::{Connection, connection};
 
 use abi::{PluginContextV1, SESSION_BUS, SYSTEM_BUS, check_abi, service_name};
-use backend::AudioManager;
-use dbus::audio::Audio;
-use dbus::DBUS_PATH;
+use manager::audio::Audio;
+use manager::{AudioManager, DBUS_PATH};
 
 /// 插件运行时状态，在 Stop 时释放。
 struct PluginState {
@@ -58,6 +57,7 @@ fn start_plugin(context: &PluginContextV1) -> Result<PluginState, i32> {
         eprintln!("[dde-audio] failed to create audio manager: {e}");
         -1
     })?;
+    let manager = std::sync::Arc::new(manager);
 
     let connection = builder
         .name(name)
@@ -65,7 +65,7 @@ fn start_plugin(context: &PluginContextV1) -> Result<PluginState, i32> {
             eprintln!("[dde-audio] failed to configure D-Bus name: {e}");
             -1
         })?
-        .serve_at(DBUS_PATH, Audio::new(manager))
+        .serve_at(DBUS_PATH, Audio::new(manager.clone(), manager.registry().clone()))
         .map_err(|e| {
             eprintln!("[dde-audio] failed to register Audio object: {e}");
             -1

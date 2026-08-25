@@ -16,7 +16,6 @@
 //! - [`sink_input`] — 播放流状态、音量/静音/平衡操作
 
 pub mod card;
-pub mod event;
 pub mod sink;
 pub mod sink_input;
 pub mod source;

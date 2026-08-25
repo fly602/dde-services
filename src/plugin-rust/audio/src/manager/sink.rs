@@ -4,31 +4,33 @@
 
 //! `org.deepin.dde.Audio2.Sink` 接口。
 //!
-//! 对应 Go 版 `Sink` 结构体导出属性和方法。
-//! 直接持有 `Arc<PulseManager>`，操作委托给 `pulse::sink` 模块。
+//! D-Bus 属性从 `DeviceRegistry` 读取，操作委托给 `backend::pulse::sink`。
 
 use std::sync::Arc;
 
+use parking_lot::RwLock;
 use zbus::interface;
 
 use crate::backend::pulse::PulseManager;
 use crate::backend::pulse::sink as pulse_sink;
-use crate::backend::SinkInfo;
 
-/// Sink DBus 对象。
+use super::registry::{DeviceRegistry, SinkState};
+
+/// Sink D-Bus 对象。
 pub struct Sink {
     index: u32,
     pulse: Arc<PulseManager>,
+    registry: Arc<RwLock<DeviceRegistry>>,
 }
 
 impl Sink {
-    pub fn new(index: u32, pulse: Arc<PulseManager>) -> Self {
-        Self { index, pulse }
+    pub fn new(index: u32, pulse: Arc<PulseManager>, registry: Arc<RwLock<DeviceRegistry>>) -> Self {
+        Self { index, pulse, registry }
     }
 
-    fn info(&self) -> Result<SinkInfo, zbus::fdo::Error> {
-        // TODO: 通过 pulse.execute 查询 sink info
-        Err(zbus::fdo::Error::Failed("unimplemented".into()))
+    fn state(&self) -> Option<SinkState> {
+        let reg = self.registry.read();
+        reg.sinks.get(&self.index).cloned()
     }
 }
 
@@ -38,52 +40,52 @@ impl Sink {
 
     #[zbus(property)]
     pub fn name(&self) -> String {
-        self.info().map(|i| i.name).unwrap_or_default()
+        self.state().map(|s| s.name).unwrap_or_default()
     }
 
     #[zbus(property)]
     pub fn description(&self) -> String {
-        self.info().map(|i| i.description).unwrap_or_default()
+        self.state().map(|s| s.description).unwrap_or_default()
     }
 
     #[zbus(property)]
     pub fn base_volume(&self) -> f64 {
-        self.info().map(|i| i.base_volume).unwrap_or_default()
+        self.state().map(|s| s.base_volume).unwrap_or_default()
     }
 
     #[zbus(property)]
     pub fn mute(&self) -> bool {
-        self.info().map(|i| i.mute).unwrap_or_default()
+        self.state().map(|s| s.mute).unwrap_or_default()
     }
 
     #[zbus(property)]
     pub fn volume(&self) -> f64 {
-        self.info().map(|i| i.volume).unwrap_or_default()
+        self.state().map(|s| s.volume).unwrap_or_default()
     }
 
     #[zbus(property)]
     pub fn balance(&self) -> f64 {
-        self.info().map(|i| i.balance).unwrap_or_default()
+        self.state().map(|s| s.balance).unwrap_or_default()
     }
 
     #[zbus(property)]
     pub fn support_balance(&self) -> bool {
-        self.info().map(|i| i.support_balance).unwrap_or_default()
+        self.state().map(|s| s.support_balance).unwrap_or_default()
     }
 
     #[zbus(property)]
     pub fn fade(&self) -> f64 {
-        self.info().map(|i| i.fade).unwrap_or_default()
+        self.state().map(|s| s.fade).unwrap_or_default()
     }
 
     #[zbus(property)]
     pub fn support_fade(&self) -> bool {
-        self.info().map(|i| i.support_fade).unwrap_or_default()
+        self.state().map(|s| s.support_fade).unwrap_or_default()
     }
 
     #[zbus(property)]
     pub fn card(&self) -> u32 {
-        self.info().map(|i| i.card).unwrap_or_default()
+        self.state().map(|s| s.card).unwrap_or_default()
     }
 
     // ========== 方法 ==========
