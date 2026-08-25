@@ -1,0 +1,19 @@
+{
+	"folders": [
+		{
+			"path": "."
+		},
+		{
+			"path": "../dde-daemon"
+		}
+	],
+	"settings": {
+		"cmake.configureSettings": {
+			"CMAKE_EXPORT_COMPILE_COMMANDS": "ON"
+		},
+		"C_Cpp.default.compileCommands": "${workspaceFolder}/build/compile_commands.json",
+		"rust-analyzer.linkedProjects": [
+			"src/plugin-rust/audio/Cargo.toml"
+		]
+	}
+}
