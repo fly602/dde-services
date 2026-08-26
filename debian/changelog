@@ -1,3 +1,9 @@
+dde-services (1.0.42) unstable; urgency=medium
+
+  * feat: add Rust audio management plugin (org.deepin.dde.Audio2)
+
+ -- fuleyi <fuleyi@uniontech.com>  Tue, 25 Aug 2026 21:30:00 +0800
+
 dde-services (1.0.41) unstable; urgency=medium
 
   * fix: change default ambient brightness to off

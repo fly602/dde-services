@@ -197,6 +197,18 @@ impl PulseManager {
         rx.recv().map_err(|e| format!("callback dropped: {e}"))
     }
 
+    /// 提交列表查询操作，收集多次回调结果直到 End。
+    ///
+    /// 与 `execute` 不同：列表查询回调会触发多次（每个 item 一次），
+    /// 用 `ListResult::End` 标记结束。闭包内收到 Item 时累积，End 时 send。
+    pub fn execute_list<T, R>(&self, op: R) -> Result<Vec<T>, String>
+    where
+        T: Send + 'static,
+        R: FnOnce(&Context, crossbeam_channel::Sender<Vec<T>>) -> bool,
+    {
+        self.execute(|ctx, tx| op(ctx, tx))
+    }
+
     /// 查询默认 sink 和 source 名称。
     ///
     /// 内部走 `execute` 模式，同步等回调返回。

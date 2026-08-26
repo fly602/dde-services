@@ -5,32 +5,32 @@
 //! `org.deepin.dde.Audio2` 主接口。
 //!
 //! 属性和方法对应 Go 版 `Audio` 结构体的导出成员和 `exported_methods_auto.go`。
-//! 设备列表从 `DeviceRegistry` 读取，Audio 级操作委托给 `AudioManager`。
+//! 设备列表从 `DeviceManager` 读取，Audio 级操作委托给 `AudioManager`。
 
 use std::sync::Arc;
 
 use parking_lot::RwLock;
 use zbus::interface;
 
-use super::registry::DeviceRegistry;
+use super::device_manager::DeviceManager;
 use super::AudioManager;
 
 /// Audio D-Bus 对象。
 ///
 /// 持有 `Arc<AudioManager>` 用于 Audio 级操作，
-/// 持有 `Arc<RwLock<DeviceRegistry>>` 用于读取设备列表。
+/// 持有 `Arc<RwLock<DeviceManager>>` 用于读取设备列表。
 pub struct Audio {
     manager: Arc<AudioManager>,
-    registry: Arc<RwLock<DeviceRegistry>>,
+    device_manager: Arc<RwLock<DeviceManager>>,
 }
 
 impl Audio {
-    pub fn new(manager: Arc<AudioManager>, registry: Arc<RwLock<DeviceRegistry>>) -> Self {
-        Self { manager, registry }
+    pub fn new(manager: Arc<AudioManager>, device_manager: Arc<RwLock<DeviceManager>>) -> Self {
+        Self { manager, device_manager }
     }
 
     fn sink_paths(&self) -> Vec<zbus::zvariant::OwnedObjectPath> {
-        let reg = self.registry.read();
+        let reg = self.device_manager.read();
         reg.sinks
             .keys()
             .map(|index| zbus::zvariant::ObjectPath::try_from(format!("/org/deepin/dde/Audio2/Sink{index}")).unwrap().into())
@@ -38,7 +38,7 @@ impl Audio {
     }
 
     fn source_paths(&self) -> Vec<zbus::zvariant::OwnedObjectPath> {
-        let reg = self.registry.read();
+        let reg = self.device_manager.read();
         reg.sources
             .keys()
             .map(|index| zbus::zvariant::ObjectPath::try_from(format!("/org/deepin/dde/Audio2/Source{index}")).unwrap().into())
@@ -46,7 +46,7 @@ impl Audio {
     }
 
     fn sink_input_paths(&self) -> Vec<zbus::zvariant::OwnedObjectPath> {
-        let reg = self.registry.read();
+        let reg = self.device_manager.read();
         reg.sink_inputs
             .keys()
             .map(|index| zbus::zvariant::ObjectPath::try_from(format!("/org/deepin/dde/Audio2/SinkInput{index}")).unwrap().into())
@@ -54,14 +54,14 @@ impl Audio {
     }
 
     fn default_sink_path(&self) -> zbus::zvariant::OwnedObjectPath {
-        let reg = self.registry.read();
+        let reg = self.device_manager.read();
         // TODO: 根据 default_sink 名称查找 index，目前返回空路径
         let _ = &reg.default_sink;
         zbus::zvariant::OwnedObjectPath::default()
     }
 
     fn default_source_path(&self) -> zbus::zvariant::OwnedObjectPath {
-        let reg = self.registry.read();
+        let reg = self.device_manager.read();
         let _ = &reg.default_source;
         zbus::zvariant::OwnedObjectPath::default()
     }

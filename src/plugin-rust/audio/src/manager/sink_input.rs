@@ -2,9 +2,12 @@
 //
 // SPDX-License-Identifier: LGPL-3.0-or-later
 
-//! `org.deepin.dde.Audio2.SinkInput` 接口。
+//! `org.deepin.dde.Audio2.SinkInput` 接口与设备生命周期。
 //!
-//! D-Bus 属性从 `DeviceRegistry` 读取，操作委托给 `backend::pulse::sink_input`。
+//! - `SinkInput::new` — 事件到达时创建 SinkInputState 写入 DeviceManager，并注册 D-Bus 对象
+//! - `SinkInput::update` — 事件到达时更新 SinkInputState
+//! - `SinkInput::delete` — 事件到达时回收资源并注销 D-Bus 对象
+//! - D-Bus 属性从 `DeviceManager` 读取，操作委托给 `backend::pulse::sink_input`
 
 use std::sync::Arc;
 
@@ -14,23 +17,81 @@ use zbus::interface;
 use crate::backend::pulse::PulseManager;
 use crate::backend::pulse::sink_input as pulse_sink_input;
 
-use super::registry::{DeviceRegistry, SinkInputState};
+use super::device_manager::{DeviceManager, SinkInputState};
 
 /// SinkInput D-Bus 对象。
 pub struct SinkInput {
     index: u32,
     pulse: Arc<PulseManager>,
-    registry: Arc<RwLock<DeviceRegistry>>,
+    device_manager: Arc<RwLock<DeviceManager>>,
 }
 
 impl SinkInput {
-    pub fn new(index: u32, pulse: Arc<PulseManager>, registry: Arc<RwLock<DeviceRegistry>>) -> Self {
-        Self { index, pulse, registry }
+    /// 构造 SinkInput D-Bus 对象实例（关联函数，由注册逻辑调用）。
+    pub fn new_instance(
+        index: u32,
+        pulse: Arc<PulseManager>,
+        device_manager: Arc<RwLock<DeviceManager>>,
+    ) -> Self {
+        Self { index, pulse, device_manager }
+    }
+
+    /// 生成 SinkInput 的 D-Bus 对象路径。
+    pub fn path(index: u32) -> String {
+        format!("/org/deepin/dde/Audio2/SinkInput{index}")
     }
 
     fn state(&self) -> Option<SinkInputState> {
-        let reg = self.registry.read();
+        let reg = self.device_manager.read();
         reg.sink_inputs.get(&self.index).cloned()
+    }
+}
+
+/// SinkInput 设备生命周期（事件处理入口，由 event_loop 调用）。
+impl SinkInput {
+    /// SinkInput 新增：查询状态写入 DeviceManager，注册 D-Bus 对象。
+    pub fn new(
+        pulse: &Arc<PulseManager>,
+        device_manager: &Arc<RwLock<DeviceManager>>,
+        connection: &zbus::blocking::Connection,
+        index: u32,
+    ) -> Result<(), String> {
+        let state = pulse_sink_input::query_info(pulse, index)?;
+        device_manager.write().add_sink_input(index, state);
+        eprintln!("[dde-audio] sink input new: {index}");
+
+        let obj = Self::new_instance(index, pulse.clone(), device_manager.clone());
+        connection
+            .object_server()
+            .at(Self::path(index), obj)
+            .map_err(|e| format!("register sink input {index} failed: {e}"))?;
+        Ok(())
+    }
+
+    /// SinkInput 更新：查询最新状态写入 DeviceManager。
+    pub fn update(
+        pulse: &Arc<PulseManager>,
+        device_manager: &Arc<RwLock<DeviceManager>>,
+        index: u32,
+    ) -> Result<(), String> {
+        let state = pulse_sink_input::query_info(pulse, index)?;
+        device_manager.write().update_sink_input(index, state);
+        eprintln!("[dde-audio] sink input update: {index}");
+        Ok(())
+    }
+
+    /// SinkInput 删除：回收资源，注销 D-Bus 对象。
+    pub fn delete(
+        device_manager: &Arc<RwLock<DeviceManager>>,
+        connection: &zbus::blocking::Connection,
+        index: u32,
+    ) {
+        device_manager.write().remove_sink_input(index);
+        // TODO: 回收资源
+        let _ = connection
+            .object_server()
+            .remove::<SinkInput, _>(Self::path(index));
+        eprintln!("[dde-audio] sink input delete: {index}");
     }
 }
 

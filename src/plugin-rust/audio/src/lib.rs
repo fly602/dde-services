@@ -53,26 +53,29 @@ fn start_plugin(context: &PluginContextV1) -> Result<PluginState, i32> {
         -1
     })?;
 
-    let manager = AudioManager::new().map_err(|e| {
-        eprintln!("[dde-audio] failed to create audio manager: {e}");
-        -1
-    })?;
-    let manager = std::sync::Arc::new(manager);
-
     let connection = builder
         .name(name)
         .map_err(|e| {
             eprintln!("[dde-audio] failed to configure D-Bus name: {e}");
             -1
         })?
-        .serve_at(DBUS_PATH, Audio::new(manager.clone(), manager.registry().clone()))
-        .map_err(|e| {
-            eprintln!("[dde-audio] failed to register Audio object: {e}");
-            -1
-        })?
         .build()
         .map_err(|e| {
             eprintln!("[dde-audio] failed to build D-Bus connection: {e}");
+            -1
+        })?;
+
+    let manager = AudioManager::new(connection.clone()).map_err(|e| {
+        eprintln!("[dde-audio] failed to create audio manager: {e}");
+        -1
+    })?;
+    let manager = std::sync::Arc::new(manager);
+
+    connection
+        .object_server()
+        .at(DBUS_PATH, Audio::new(manager.clone(), manager.device_manager().clone()))
+        .map_err(|e| {
+            eprintln!("[dde-audio] failed to register Audio object: {e}");
             -1
         })?;
 
@@ -125,5 +128,60 @@ pub unsafe extern "C" fn DSMRustStopV1(plugin_handle: *mut c_void) -> i32 {
         Ok(Ok(())) => 0,
         Ok(Err(code)) => code,
         Err(_) => -1,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::backend::pulse::{card, sink, sink_input, source, PulseManager};
+
+    /// 连接 pulse daemon，查询所有设备列表。
+    /// 需要系统有 PulseAudio 或 pipewire-pulse 运行。
+    #[test]
+    fn query_all_devices() {
+        let (pulse, _rx) = PulseManager::new().expect("connect to pulse daemon");
+
+        let cards = card::query_list(&pulse).expect("query cards");
+        let sinks = sink::query_list(&pulse).expect("query sinks");
+        let sources = source::query_list(&pulse).expect("query sources");
+        let sink_inputs = sink_input::query_list(&pulse).expect("query sink inputs");
+
+        eprintln!("cards: {}", cards.len());
+        for c in &cards {
+            eprintln!("  card {}: {} profile={}", c.index, c.name, c.active_profile);
+        }
+        eprintln!("sinks: {}", sinks.len());
+        for s in &sinks {
+            eprintln!(
+                "  sink {}: {} desc={} vol={} mute={} card={}",
+                s.index, s.name, s.description, s.volume, s.mute, s.card
+            );
+        }
+        eprintln!("sources: {}", sources.len());
+        for s in &sources {
+            eprintln!(
+                "  source {}: {} desc={} vol={} mute={} card={}",
+                s.index, s.name, s.description, s.volume, s.mute, s.card
+            );
+        }
+        eprintln!("sink inputs: {}", sink_inputs.len());
+        for si in &sink_inputs {
+            eprintln!(
+                "  sink input {}: {} vol={} mute={}",
+                si.index, si.name, si.volume, si.mute
+            );
+        }
+
+        // 至少应该有 card 和 sink（物理音频设备）
+        assert!(!cards.is_empty(), "should have at least one card");
+    }
+
+    /// 验证默认 sink/source 查询。
+    #[test]
+    fn query_default_sink_source() {
+        let (pulse, _rx) = PulseManager::new().expect("connect to pulse daemon");
+        let (sink, source) = pulse.default_sink_source().expect("query default sink/source");
+        eprintln!("default sink: {sink}");
+        eprintln!("default source: {source}");
     }
 }
