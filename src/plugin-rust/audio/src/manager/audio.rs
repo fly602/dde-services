@@ -55,15 +55,34 @@ impl Audio {
 
     fn default_sink_path(&self) -> zbus::zvariant::OwnedObjectPath {
         let reg = self.device_manager.read();
-        // TODO: 根据 default_sink 名称查找 index，目前返回空路径
-        let _ = &reg.default_sink;
-        zbus::zvariant::OwnedObjectPath::default()
+        let index = reg
+            .default_sink
+            .as_deref()
+            .and_then(|name| reg.find_sink_index_by_name(name));
+        match index {
+            Some(i) => zbus::zvariant::ObjectPath::try_from(
+                format!("/org/deepin/dde/Audio2/Sink{i}"),
+            )
+            .unwrap()
+            .into(),
+            None => zbus::zvariant::OwnedObjectPath::default(),
+        }
     }
 
     fn default_source_path(&self) -> zbus::zvariant::OwnedObjectPath {
         let reg = self.device_manager.read();
-        let _ = &reg.default_source;
-        zbus::zvariant::OwnedObjectPath::default()
+        let index = reg
+            .default_source
+            .as_deref()
+            .and_then(|name| reg.find_source_index_by_name(name));
+        match index {
+            Some(i) => zbus::zvariant::ObjectPath::try_from(
+                format!("/org/deepin/dde/Audio2/Source{i}"),
+            )
+            .unwrap()
+            .into(),
+            None => zbus::zvariant::OwnedObjectPath::default(),
+        }
     }
 }
 
@@ -98,12 +117,12 @@ impl Audio {
 
     #[zbus(property)]
     pub fn cards(&self) -> String {
-        self.manager.cards()
+        self.device_manager.read().cards_json()
     }
 
     #[zbus(property)]
     pub fn cards_without_unavailable(&self) -> String {
-        self.manager.cards_without_unavailable()
+        self.device_manager.read().cards_without_unavailable_json()
     }
 
     #[zbus(property)]

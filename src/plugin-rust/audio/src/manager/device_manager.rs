@@ -99,6 +99,34 @@ pub struct CardState {
     pub ports: Vec<CardPortInfo>,
 }
 
+/// Cards 属性 JSON 序列化结构，字段名与 Go 版兼容。
+#[derive(serde::Serialize)]
+struct CardExport<'a> {
+    #[serde(rename = "Id")]
+    id: u32,
+    #[serde(rename = "Name")]
+    name: &'a str,
+    #[serde(rename = "Ports")]
+    ports: Vec<CardPortExport>,
+}
+
+/// Cards 属性端口序列化结构。
+#[derive(serde::Serialize)]
+struct CardPortExport {
+    #[serde(rename = "Name")]
+    name: String,
+    #[serde(rename = "Enabled")]
+    enabled: bool,
+    #[serde(rename = "Bluetooth")]
+    bluetooth: bool,
+    #[serde(rename = "Description")]
+    description: String,
+    #[serde(rename = "Direction")]
+    direction: u32,
+    #[serde(rename = "PortType")]
+    port_type: u32,
+}
+
 /// 设备管理器。
 ///
 /// 持有四张 HashMap 表管理设备状态，通过 `Arc<RwLock<DeviceManager>>` 共享。
@@ -194,5 +222,63 @@ impl DeviceManager {
 
     pub fn set_default_source(&mut self, name: String) {
         self.default_source = Some(name);
+    }
+
+    // ===== 查询辅助 =====
+
+    /// 按名称查找 Sink 索引。
+    pub fn find_sink_index_by_name(&self, name: &str) -> Option<u32> {
+        self.sinks.values().find(|s| s.name == name).map(|s| s.index)
+    }
+
+    /// 按名称查找 Source 索引。
+    pub fn find_source_index_by_name(&self, name: &str) -> Option<u32> {
+        self.sources.values().find(|s| s.name == name).map(|s| s.index)
+    }
+
+    /// 序列化声卡列表为 JSON 字符串。
+    ///
+    /// 格式与 Go 版 Cards 属性兼容：
+    /// `[{"Id":52,"Name":"...","Ports":[...]}]`
+    pub fn cards_json(&self) -> String {
+        let list: Vec<CardExport> = self
+            .cards
+            .values()
+            .map(|c| card_to_export(c, false))
+            .collect();
+        serde_json::to_string(&list).unwrap_or_else(|_| "[]".into())
+    }
+
+    /// 序列化声卡列表为 JSON（不含不可用端口）。
+    pub fn cards_without_unavailable_json(&self) -> String {
+        let list: Vec<CardExport> = self
+            .cards
+            .values()
+            .map(|c| card_to_export(c, true))
+            .collect();
+        serde_json::to_string(&list).unwrap_or_else(|_| "[]".into())
+    }
+}
+
+/// 将 CardState 转换为 CardExport。
+/// `filter_unavailable` 为 true 时过滤 enabled=false 的端口。
+fn card_to_export(card: &CardState, filter_unavailable: bool) -> CardExport<'_> {
+    let ports: Vec<CardPortExport> = card
+        .ports
+        .iter()
+        .filter(|p| !filter_unavailable || p.enabled)
+        .map(|p| CardPortExport {
+            name: p.name.clone(),
+            enabled: p.enabled,
+            bluetooth: p.bluetooth,
+            description: p.description.clone(),
+            direction: p.direction,
+            port_type: 0, // TODO: GetIconPortType
+        })
+        .collect();
+    CardExport {
+        id: card.index,
+        name: &card.name,
+        ports,
     }
 }
