@@ -24,6 +24,8 @@ pub struct SinkInput {
     index: u32,
     pulse: Arc<PulseManager>,
     device_manager: Arc<RwLock<DeviceManager>>,
+    #[allow(dead_code)]
+    connection: zbus::blocking::Connection,
 }
 
 impl SinkInput {
@@ -32,8 +34,9 @@ impl SinkInput {
         index: u32,
         pulse: Arc<PulseManager>,
         device_manager: Arc<RwLock<DeviceManager>>,
+        connection: zbus::blocking::Connection,
     ) -> Self {
-        Self { index, pulse, device_manager }
+        Self { index, pulse, device_manager, connection }
     }
 
     /// 生成 SinkInput 的 D-Bus 对象路径。
@@ -60,7 +63,7 @@ impl SinkInput {
         device_manager.write().add_sink_input(index, state);
         eprintln!("[dde-audio] sink input new: {index}");
 
-        let obj = Self::new_instance(index, pulse.clone(), device_manager.clone());
+        let obj = Self::new_instance(index, pulse.clone(), device_manager.clone(), connection.clone());
         connection
             .object_server()
             .at(Self::path(index), obj)

@@ -178,7 +178,7 @@ fn init_devices(
     for state in sink::query_list(pulse)? {
         let index = state.index;
         device_manager.write().add_sink(index, state);
-        let obj = Sink::new_instance(index, pulse.clone(), device_manager.clone());
+        let obj = Sink::new_instance(index, pulse.clone(), device_manager.clone(), connection.clone());
         connection
             .object_server()
             .at(Sink::path(index), obj)
@@ -189,7 +189,7 @@ fn init_devices(
     for state in source::query_list(pulse)? {
         let index = state.index;
         device_manager.write().add_source(index, state);
-        let obj = Source::new_instance(index, pulse.clone(), device_manager.clone());
+        let obj = Source::new_instance(index, pulse.clone(), device_manager.clone(), connection.clone());
         connection
             .object_server()
             .at(Source::path(index), obj)
@@ -200,7 +200,7 @@ fn init_devices(
     for state in sink_input::query_list(pulse)? {
         let index = state.index;
         device_manager.write().add_sink_input(index, state);
-        let obj = SinkInput::new_instance(index, pulse.clone(), device_manager.clone());
+        let obj = SinkInput::new_instance(index, pulse.clone(), device_manager.clone(), connection.clone());
         connection
             .object_server()
             .at(SinkInput::path(index), obj)

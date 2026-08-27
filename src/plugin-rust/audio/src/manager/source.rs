@@ -24,6 +24,7 @@ pub struct Source {
     index: u32,
     pulse: Arc<PulseManager>,
     device_manager: Arc<RwLock<DeviceManager>>,
+    connection: zbus::blocking::Connection,
 }
 
 impl Source {
@@ -32,8 +33,9 @@ impl Source {
         index: u32,
         pulse: Arc<PulseManager>,
         device_manager: Arc<RwLock<DeviceManager>>,
+        connection: zbus::blocking::Connection,
     ) -> Self {
-        Self { index, pulse, device_manager }
+        Self { index, pulse, device_manager, connection }
     }
 
     /// 生成 Source 的 D-Bus 对象路径。
@@ -60,7 +62,7 @@ impl Source {
         device_manager.write().add_source(index, state);
         eprintln!("[dde-audio] source new: {index}");
 
-        let obj = Self::new_instance(index, pulse.clone(), device_manager.clone());
+        let obj = Self::new_instance(index, pulse.clone(), device_manager.clone(), connection.clone());
         connection
             .object_server()
             .at(Self::path(index), obj)
@@ -152,8 +154,17 @@ impl Source {
     // ========== 方法 ==========
 
     fn get_meter(&self) -> zbus::fdo::Result<zbus::zvariant::OwnedObjectPath> {
-        // TODO: 通过 pulse::source::get_meter 创建 Meter 并返回路径
-        Err(zbus::fdo::Error::Failed("unimplemented".into()))
+        use super::meter::Meter;
+
+        let meter = Meter::new(self.index, false, self.device_manager.clone());
+        let path = Meter::path(self.index, false);
+        self.connection
+            .object_server()
+            .at(path.clone(), meter)
+            .map_err(|e| zbus::fdo::Error::Failed(format!("register meter failed: {e}")))?;
+        zbus::zvariant::ObjectPath::try_from(path)
+            .map(Into::into)
+            .map_err(|e| zbus::fdo::Error::Failed(e.to_string()))
     }
 
     fn set_balance(&self, value: f64, is_play: bool) -> zbus::fdo::Result<()> {

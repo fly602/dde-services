@@ -27,16 +27,17 @@ pub struct Sink {
     index: u32,
     pulse: Arc<PulseManager>,
     device_manager: Arc<RwLock<DeviceManager>>,
+    connection: zbus::blocking::Connection,
 }
 
 impl Sink {
-    /// 构造 Sink D-Bus 对象实例（关联函数，由注册逻辑调用）。
     pub fn new_instance(
         index: u32,
         pulse: Arc<PulseManager>,
         device_manager: Arc<RwLock<DeviceManager>>,
+        connection: zbus::blocking::Connection,
     ) -> Self {
-        Self { index, pulse, device_manager }
+        Self { index, pulse, device_manager, connection }
     }
 
     /// 生成 Sink 的 D-Bus 对象路径。
@@ -64,8 +65,7 @@ impl Sink {
         let state = pulse_sink::query_info(pulse, index)?;
         device_manager.write().add_sink(index, state);
         eprintln!("[dde-audio] sink new: {index}");
-
-        let obj = Self::new_instance(index, pulse.clone(), device_manager.clone());
+        let obj = Self::new_instance(index, pulse.clone(), device_manager.clone(), connection.clone());
         connection
             .object_server()
             .at(Self::path(index), obj)
@@ -159,8 +159,17 @@ impl Sink {
     // ========== 方法 ==========
 
     fn get_meter(&self) -> zbus::fdo::Result<zbus::zvariant::OwnedObjectPath> {
-        // TODO: 通过 pulse::sink::get_meter 创建 Meter 并返回路径
-        Err(zbus::fdo::Error::Failed("unimplemented".into()))
+        use super::meter::Meter;
+
+        let meter = Meter::new(self.index, true, self.device_manager.clone());
+        let path = Meter::path(self.index, true);
+        self.connection
+            .object_server()
+            .at(path.clone(), meter)
+            .map_err(|e| zbus::fdo::Error::Failed(format!("register meter failed: {e}")))?;
+        zbus::zvariant::ObjectPath::try_from(path)
+            .map(Into::into)
+            .map_err(|e| zbus::fdo::Error::Failed(e.to_string()))
     }
 
     fn set_balance(&self, value: f64, is_play: bool) -> zbus::fdo::Result<()> {
