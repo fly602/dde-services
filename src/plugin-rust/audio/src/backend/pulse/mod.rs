@@ -45,7 +45,9 @@ pub enum PulseEvent {
     SinkInputAdded { index: u32 },
     SinkInputRemoved { index: u32 },
     SinkInputChanged { index: u32 },
+    #[allow(dead_code)]
     DefaultSinkChanged { name: String },
+    #[allow(dead_code)]
     DefaultSourceChanged { name: String },
     Server,
 }
@@ -201,6 +203,7 @@ impl PulseManager {
     ///
     /// 与 `execute` 不同：列表查询回调会触发多次（每个 item 一次），
     /// 用 `ListResult::End` 标记结束。闭包内收到 Item 时累积，End 时 send。
+#[allow(dead_code)]
     pub fn execute_list<T, R>(&self, op: R) -> Result<Vec<T>, String>
     where
         T: Send + 'static,
@@ -216,13 +219,11 @@ impl PulseManager {
     #[allow(dead_code)]
     pub fn default_sink_source(&self) -> Result<(String, String), String> {
         self.execute(|ctx, tx| {
-            let op = ctx.introspect().get_server_info(move |info| {
+            ctx.introspect().get_server_info(move |info| {
                 let sink = info.default_sink_name.as_deref().unwrap_or("").to_owned();
                 let source = info.default_source_name.as_deref().unwrap_or("").to_owned();
                 let _ = tx.send((sink, source));
             });
-            // Operation 总是非空的（成功返回 Operation，失败 panic）
-            // 用 get_state 判断是否提交成功
             true
         })
     }

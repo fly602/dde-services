@@ -28,6 +28,7 @@ use crate::backend::pulse::PulseManager;
 use device_manager::DeviceManager;
 
 /// D-Bus 服务名。
+#[allow(dead_code)]
 pub const DBUS_SERVICE_NAME: &str = "org.deepin.dde.Audio2";
 
 /// D-Bus 主对象路径。
@@ -74,6 +75,7 @@ impl AudioManager {
     }
 
     /// 获取 PulseManager 引用，供 D-Bus 子对象调用底层操作。
+#[allow(dead_code)]
     pub fn pulse(&self) -> &Arc<PulseManager> {
         &self.pulse
     }
@@ -84,15 +86,18 @@ impl AudioManager {
     }
 
     /// 获取 zbus Connection 引用，供 D-Bus 子对象动态注册/注销。
+#[allow(dead_code)]
     pub fn connection(&self) -> &zbus::blocking::Connection {
         &self.connection
     }
 
     // ===== Audio 级别属性（后续实现） =====
 
+#[allow(dead_code)]
     pub fn cards(&self) -> String {
         String::new()
     }
+#[allow(dead_code)]
     pub fn cards_without_unavailable(&self) -> String {
         String::new()
     }

@@ -11,6 +11,7 @@ use zbus::interface;
 use crate::backend::pulse::PulseManager;
 
 /// Meter D-Bus 对象。
+#[allow(dead_code)]
 pub struct Meter {
     id: u32,
     #[allow(dead_code)]
@@ -18,6 +19,7 @@ pub struct Meter {
 }
 
 impl Meter {
+    #[allow(dead_code)]
     pub fn new(id: u32, pulse: Arc<PulseManager>) -> Self {
         Self { id, pulse }
     }
@@ -26,6 +28,7 @@ impl Meter {
 #[interface(name = "org.deepin.dde.Audio2.Meter")]
 impl Meter {
     /// 音量计量 tick 方法。
+    #[allow(dead_code)]
     fn tick(&self) -> zbus::fdo::Result<()> {
         // TODO: 通过 pulse 查询 meter 值
         let _ = self.id;

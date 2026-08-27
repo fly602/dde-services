@@ -59,4 +59,5 @@ pub fn check_abi(context: &PluginContextV1) -> bool {
 }
 
 /// 拒绝裸指针的便利别名。
+#[allow(dead_code)]
 pub type RawHandle = *mut c_void;

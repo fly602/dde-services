@@ -35,6 +35,7 @@ pub struct CardPortInfo {
 
 /// 声卡信息。
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize, zbus::zvariant::Type)]
+#[allow(dead_code)]
 pub struct CardInfo {
     pub id: u32,
     pub name: String,
@@ -156,6 +157,7 @@ impl DeviceManager {
         self.sinks.remove(&index)
     }
 
+#[allow(dead_code)]
     pub fn get_sink(&self, index: u32) -> Option<&SinkState> {
         self.sinks.get(&index)
     }
@@ -174,6 +176,7 @@ impl DeviceManager {
         self.sources.remove(&index)
     }
 
+#[allow(dead_code)]
     pub fn get_source(&self, index: u32) -> Option<&SourceState> {
         self.sources.get(&index)
     }
@@ -192,6 +195,7 @@ impl DeviceManager {
         self.sink_inputs.remove(&index)
     }
 
+#[allow(dead_code)]
     pub fn get_sink_input(&self, index: u32) -> Option<&SinkInputState> {
         self.sink_inputs.get(&index)
     }
@@ -210,6 +214,7 @@ impl DeviceManager {
         self.cards.remove(&index)
     }
 
+#[allow(dead_code)]
     pub fn get_card(&self, index: u32) -> Option<&CardState> {
         self.cards.get(&index)
     }

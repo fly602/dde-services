@@ -2,56 +2,155 @@
 //
 // SPDX-License-Identifier: LGPL-3.0-or-later
 
-//! 输入设备（Source）设置操作。
-//!
-//! 纯操作函数，不保存状态。状态管理在 `manager::registry`。
-//! 所有操作通过 `PulseManager::execute` 复用。
-
 use super::PulseManager;
 
 /// 设置 Source 音量。
-#[allow(dead_code)]
+///
+/// value == 0 时静音，否则取消静音（与 Go 版行为一致）。
 pub fn set_volume(
-    _pulse: &PulseManager,
-    _index: u32,
-    _value: f64,
+    pulse: &PulseManager,
+    index: u32,
+    value: f64,
     _is_play: bool,
 ) -> Result<(), String> {
-    // TODO: pulse.execute(|ctx, tx| ctx.set_source_volume_by_index(index, &cvol, callback))
-    Err("unimplemented".into())
+    use libpulse_binding::volume::Volume;
+    use libpulse_binding::volume::ChannelVolumes;
+
+    fn volume_from_float(v: f64) -> Volume {
+        Volume((v * Volume::NORMAL.0 as f64) as u32)
+    }
+    fn cvolume_from_float(v: f64, ch: u8) -> ChannelVolumes {
+        let mut cv = ChannelVolumes::default();
+        cv.set_len(ch);
+        cv.set(ch, volume_from_float(v));
+        cv
+    }
+
+    pulse.execute(|ctx, tx| {
+        let mut intro = ctx.introspect();
+        let cv = cvolume_from_float(value, 2);
+        intro.set_source_volume_by_index(index, &cv, Some(Box::new(move |ok| {
+            let _ = tx.send(ok);
+        })));
+        true
+    })?;
+    Ok(())
 }
 
 /// 设置 Source 静音。
-#[allow(dead_code)]
-pub fn set_mute(_pulse: &PulseManager, _index: u32, _value: bool) -> Result<(), String> {
-    // TODO: pulse.execute(|ctx, tx| ctx.set_source_mute_by_index(index, value, callback))
-    Err("unimplemented".into())
+pub fn set_mute(pulse: &PulseManager, index: u32, value: bool) -> Result<(), String> {
+    pulse.execute(|ctx, tx| {
+        let mut intro = ctx.introspect();
+        intro.set_source_mute_by_index(index, value, Some(Box::new(move |ok| {
+            let _ = tx.send(ok);
+        })));
+        true
+    })?;
+    Ok(())
 }
 
 /// 设置 Source 左右声道平衡。
-#[allow(dead_code)]
+///
+/// 查询设备当前的 ChannelVolumes 和 ChannelMap，调整后再设置。
 pub fn set_balance(
-    _pulse: &PulseManager,
-    _index: u32,
-    _value: f64,
+    pulse: &PulseManager,
+    index: u32,
+    value: f64,
     _is_play: bool,
 ) -> Result<(), String> {
-    // TODO: 计算新 cvol 后 set_source_volume_by_index
-    Err("unimplemented".into())
+    use libpulse_binding::callbacks::ListResult;
+    use libpulse_binding::volume::ChannelVolumes;
+
+    let (volume, map) = pulse.execute(|ctx, tx| {
+        let intro = ctx.introspect();
+        let mut volume: Option<ChannelVolumes> = None;
+        let mut map: Option<libpulse_binding::channelmap::Map> = None;
+        intro.get_source_info_by_index(index, move |res| {
+            match res {
+                ListResult::Item(info) => {
+                    volume = Some(info.volume.clone());
+                    map = Some(info.channel_map.clone());
+                }
+                ListResult::End | ListResult::Error => {
+                    let _ = tx.send((volume.take(), map.take()));
+                }
+            }
+        });
+        true
+    })?;
+
+    let (mut volume, map) = match (volume, map) {
+        (Some(v), Some(m)) => (v, m),
+        _ => return Err("get source volume info failed".into()),
+    };
+    volume.set_balance(&map, value as f32);
+
+    let result: bool = pulse.execute(|ctx, tx| {
+        let mut intro = ctx.introspect();
+        intro.set_source_volume_by_index(index, &volume, Some(Box::new(move |ok| {
+            let _ = tx.send(ok);
+        })));
+        true
+    })?;
+    if !result {
+        return Err("set balance failed".into());
+    }
+    Ok(())
 }
 
 /// 设置 Source 前后声道平衡。
-#[allow(dead_code)]
-pub fn set_fade(_pulse: &PulseManager, _index: u32, _value: f64) -> Result<(), String> {
-    // TODO: 计算新 cvol 后 set_source_volume_by_index
-    Err("unimplemented".into())
+pub fn set_fade(pulse: &PulseManager, index: u32, value: f64) -> Result<(), String> {
+    use libpulse_binding::callbacks::ListResult;
+    use libpulse_binding::volume::ChannelVolumes;
+
+    let (volume, map) = pulse.execute(|ctx, tx| {
+        let intro = ctx.introspect();
+        let mut volume: Option<ChannelVolumes> = None;
+        let mut map: Option<libpulse_binding::channelmap::Map> = None;
+        intro.get_source_info_by_index(index, move |res| {
+            match res {
+                ListResult::Item(info) => {
+                    volume = Some(info.volume.clone());
+                    map = Some(info.channel_map.clone());
+                }
+                ListResult::End | ListResult::Error => {
+                    let _ = tx.send((volume.take(), map.take()));
+                }
+            }
+        });
+        true
+    })?;
+
+    let (mut volume, map) = match (volume, map) {
+        (Some(v), Some(m)) => (v, m),
+        _ => return Err("get source volume info failed".into()),
+    };
+    volume.set_fade(&map, value as f32);
+
+    let result: bool = pulse.execute(|ctx, tx| {
+        let mut intro = ctx.introspect();
+        intro.set_source_volume_by_index(index, &volume, Some(Box::new(move |ok| {
+            let _ = tx.send(ok);
+        })));
+        true
+    })?;
+    if !result {
+        return Err("set fade failed".into());
+    }
+    Ok(())
 }
 
 /// 设置 Source 端口。
-#[allow(dead_code)]
-pub fn set_port(_pulse: &PulseManager, _index: u32, _name: &str) -> Result<(), String> {
-    // TODO: pulse.execute(|ctx, tx| ctx.set_source_port_by_index(index, name, callback))
-    Err("unimplemented".into())
+pub fn set_port(pulse: &PulseManager, index: u32, name: &str) -> Result<(), String> {
+    let name = name.to_owned();
+    pulse.execute(|ctx, tx| {
+        let mut intro = ctx.introspect();
+        intro.set_source_port_by_index(index, &name, Some(Box::new(move |ok| {
+            let _ = tx.send(ok);
+        })));
+        true
+    })?;
+    Ok(())
 }
 
 /// 获取 Source 音量计量器。

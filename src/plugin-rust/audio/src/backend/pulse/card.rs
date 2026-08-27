@@ -2,45 +2,103 @@
 //
 // SPDX-License-Identifier: LGPL-3.0-or-later
 
-//! 声卡设置操作。
-//!
-//! 纯操作函数，不保存状态。状态管理在 `manager::registry`。
-//! 所有操作通过 `PulseManager::execute` 复用。
-
 use super::PulseManager;
 
 /// 设置声卡 profile。
 #[allow(dead_code)]
 pub fn set_card_profile(
-    _pulse: &PulseManager,
-    _card_id: u32,
-    _profile_name: &str,
+    pulse: &PulseManager,
+    card_id: u32,
+    profile_name: &str,
 ) -> Result<(), String> {
-    // TODO: pulse.execute(|ctx, tx| ctx.set_card_profile_by_index(...))
-    Err("unimplemented".into())
+    let profile_name = profile_name.to_owned();
+    pulse.execute(|ctx, tx| {
+        let mut intro = ctx.introspect();
+        intro.set_card_profile_by_index(card_id, &profile_name, Some(Box::new(move |ok| {
+            let _ = tx.send(ok);
+        })));
+        true
+    })?;
+    Ok(())
 }
 
 /// 设置端口启用/禁用。
+///
+/// libpulse 无直接 API，通过查询声卡端口所属 profile 并切换实现。
+/// 端口启用状态（enabled 持久化）由上层 DeviceManager 管理（TODO）。
 #[allow(dead_code)]
 pub fn set_port_enabled(
-    _pulse: &PulseManager,
-    _card_id: u32,
-    _port_name: &str,
+    pulse: &PulseManager,
+    card_id: u32,
+    port_name: &str,
     _enabled: bool,
 ) -> Result<(), String> {
-    // TODO: 通过 card ext-port 或 profile 切换实现
-    Err("unimplemented".into())
+    use libpulse_binding::callbacks::ListResult;
+
+    let port_name = port_name.to_owned();
+
+    // 查询声卡，找到端口对应的 profile 名称
+    let profile_name: Option<String> = pulse.execute(|ctx, tx| {
+        let intro = ctx.introspect();
+        let mut profile: Option<String> = None;
+        let port = port_name.clone();
+        intro.get_card_info_by_index(card_id, move |res| {
+            match res {
+                ListResult::Item(info) => {
+                    for p in &info.ports {
+                        if p.name.as_deref() == Some(port.as_str()) {
+                            if let Some(prof) = p.profiles.first() {
+                                profile = prof.name.as_deref().map(|n| n.to_owned());
+                            }
+                            break;
+                        }
+                    }
+                }
+                ListResult::End | ListResult::Error => {
+                    let _ = tx.send(profile.take());
+                }
+            }
+        });
+        true
+    })?;
+
+    match profile_name {
+        Some(name) => set_card_profile(pulse, card_id, &name),
+        None => Err(format!("port {port_name} not found on card {card_id}")),
+    }
 }
 
 /// 查询端口是否启用。
 #[allow(dead_code)]
 pub fn is_port_enabled(
-    _pulse: &PulseManager,
-    _card_id: u32,
-    _port_name: &str,
+    pulse: &PulseManager,
+    card_id: u32,
+    port_name: &str,
 ) -> Result<bool, String> {
-    // TODO: 查询 card port 状态
-    Err("unimplemented".into())
+    use libpulse_binding::callbacks::ListResult;
+
+    let port_name = port_name.to_owned();
+
+    pulse.execute(|ctx, tx| {
+        let intro = ctx.introspect();
+        let mut enabled = false;
+        intro.get_card_info_by_index(card_id, move |res| {
+            match res {
+                ListResult::Item(info) => {
+                    for port in &info.ports {
+                        if port.name.as_deref() == Some(port_name.as_str()) {
+                            enabled = port.available != libpulse_binding::def::PortAvailable::No;
+                            break;
+                        }
+                    }
+                }
+                ListResult::End | ListResult::Error => {
+                    let _ = tx.send(enabled);
+                }
+            }
+        });
+        true
+    })
 }
 
 /// 查询单个声卡信息，构造 `CardState`。
