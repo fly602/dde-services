@@ -272,6 +272,10 @@ impl AudioManager {
         pulse_card::set_card_profile(&self.pulse, card_id, profile)?;
         wait.wait(std::time::Duration::from_secs(5))
     }
+    /// 设置端口启用/禁用。
+    ///
+    /// TODO: 端口禁用涉及端口优选逻辑，待实现端口优选时一起处理。
+    /// 当前仅返回未实现。
     pub fn set_port_enabled(
         &self,
         _card_id: u32,
@@ -280,6 +284,9 @@ impl AudioManager {
     ) -> Result<(), String> {
         Err("unimplemented".into())
     }
+    /// 查询端口是否启用。
+    ///
+    /// TODO: 待端口优选实现后接上 availability 查询。
     pub fn is_port_enabled(&self, _card_id: u32, _port_name: &str) -> Result<bool, String> {
         Err("unimplemented".into())
     }

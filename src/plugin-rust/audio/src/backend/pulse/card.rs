@@ -12,13 +12,16 @@ pub fn set_card_profile(
     profile_name: &str,
 ) -> Result<(), String> {
     let profile_name = profile_name.to_owned();
-    pulse.execute(|ctx, tx| {
+    let ok: bool = pulse.execute(|ctx, tx| {
         let mut intro = ctx.introspect();
         intro.set_card_profile_by_index(card_id, &profile_name, Some(Box::new(move |ok| {
             let _ = tx.send(ok);
         })));
         true
     })?;
+    if !ok {
+        return Err(format!("set card profile failed for card {card_id}"));
+    }
     Ok(())
 }
 

@@ -26,7 +26,7 @@ pub fn set_volume(
         cv
     }
 
-    pulse.execute(|ctx, tx| {
+    let ok: bool = pulse.execute(|ctx, tx| {
         let mut intro = ctx.introspect();
         let cv = cvolume_from_float(value, 2);
         intro.set_source_volume_by_index(index, &cv, Some(Box::new(move |ok| {
@@ -34,18 +34,24 @@ pub fn set_volume(
         })));
         true
     })?;
+    if !ok {
+        return Err(format!("set volume failed for source {index}"));
+    }
     Ok(())
 }
 
 /// 设置 Source 静音。
 pub fn set_mute(pulse: &PulseManager, index: u32, value: bool) -> Result<(), String> {
-    pulse.execute(|ctx, tx| {
+    let ok: bool = pulse.execute(|ctx, tx| {
         let mut intro = ctx.introspect();
         intro.set_source_mute_by_index(index, value, Some(Box::new(move |ok| {
             let _ = tx.send(ok);
         })));
         true
     })?;
+    if !ok {
+        return Err(format!("set mute failed for source {index}"));
+    }
     Ok(())
 }
 
@@ -142,14 +148,16 @@ pub fn set_fade(pulse: &PulseManager, index: u32, value: f64) -> Result<(), Stri
 
 /// 设置 Source 端口。
 pub fn set_port(pulse: &PulseManager, index: u32, name: &str) -> Result<(), String> {
-    let name = name.to_owned();
-    pulse.execute(|ctx, tx| {
+    let ok: bool = pulse.execute(|ctx, tx| {
         let mut intro = ctx.introspect();
         intro.set_source_port_by_index(index, &name, Some(Box::new(move |ok| {
             let _ = tx.send(ok);
         })));
         true
     })?;
+    if !ok {
+        return Err(format!("set port failed for source {index}"));
+    }
     Ok(())
 }
 

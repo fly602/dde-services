@@ -26,7 +26,7 @@ pub fn set_volume(
         cv
     }
 
-    pulse.execute(|ctx, tx| {
+    let ok: bool = pulse.execute(|ctx, tx| {
         let mut intro = ctx.introspect();
         let cv = cvolume_from_float(value, 2);
         intro.set_sink_input_volume(index, &cv, Some(Box::new(move |ok| {
@@ -34,18 +34,24 @@ pub fn set_volume(
         })));
         true
     })?;
+    if !ok {
+        return Err(format!("set volume failed for sink input {index}"));
+    }
     Ok(())
 }
 
 /// 设置 SinkInput 静音。
 pub fn set_mute(pulse: &PulseManager, index: u32, value: bool) -> Result<(), String> {
-    pulse.execute(|ctx, tx| {
+    let ok: bool = pulse.execute(|ctx, tx| {
         let mut intro = ctx.introspect();
         intro.set_sink_input_mute(index, value, Some(Box::new(move |ok| {
             let _ = tx.send(ok);
         })));
         true
     })?;
+    if !ok {
+        return Err(format!("set mute failed for sink input {index}"));
+    }
     Ok(())
 }
 
