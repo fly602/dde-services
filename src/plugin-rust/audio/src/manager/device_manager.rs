@@ -113,11 +113,28 @@ pub struct CardState {
 /// card 级别 profile 切换等待项。
 ///
 /// set_profile 阻塞等待，event_loop 设备创建完成后通知。
+/// pending 操作的最终结果。
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum PendingResult {
+    /// 完成（设备重建齐全）。
+    Complete,
+    /// 声卡被移除，操作终止。
+    CardRemoved,
+    /// 失败（当前无生产者，为三态协议预留）。
+    #[allow(dead_code)]
+    Failed(String),
+}
+
+/// card 级别 profile 切换等待项。
+///
+/// set_profile 阻塞等待，event_loop 设备创建完成后通知。
 ///
 /// `required_directions` 记录切换前该声卡存在的设备方向（bit0=输出，bit1=输入），
 /// 设备重建后所有方向齐全才认为完成。
+///
+/// 结果是广播的（`notify_all`），多个等待者可同时收到 complete/card removed。
 pub struct PendingProfile {
-    done: std::sync::Mutex<bool>,
+    result: std::sync::Mutex<Option<PendingResult>>,
     cond: std::sync::Condvar,
     /// 需要重建的方向掩码：bit0=输出(sink)，bit1=输入(source)。
     required_directions: u32,
@@ -132,7 +149,7 @@ impl PendingProfile {
     /// 创建等待项，指定需要重建的方向。
     pub fn new(required_directions: u32) -> Arc<Self> {
         Arc::new(Self {
-            done: std::sync::Mutex::new(false),
+            result: std::sync::Mutex::new(None),
             cond: std::sync::Condvar::new(),
             required_directions,
         })
@@ -143,30 +160,46 @@ impl PendingProfile {
         self.required_directions
     }
 
-    /// 阻塞等待完成，超时返回错误。
-    pub fn wait(&self, timeout: std::time::Duration) -> Result<(), String> {
-        let mut done = self
-            .done
+    /// 阻塞等待结果，超时返回错误。
+    pub fn wait(&self, timeout: std::time::Duration) -> Result<PendingResult, String> {
+        let mut result = self
+            .result
             .lock()
             .map_err(|e| format!("mutex poisoned: {e}"))?;
-        while !*done {
+        while result.is_none() {
             let (guard, timeout_result) = self
                 .cond
-                .wait_timeout(done, timeout)
+                .wait_timeout(result, timeout)
                 .map_err(|e| format!("mutex poisoned: {e}"))?;
-            done = guard;
+            result = guard;
             if timeout_result.timed_out() {
                 return Err("profile switch timed out".into());
             }
         }
-        Ok(())
+        Ok(result.clone().unwrap())
     }
 
-    /// 通知完成（广播）。
-    pub fn signal(&self) {
-        if let Ok(mut done) = self.done.lock() {
-            *done = true;
-            self.cond.notify_all();
+    /// 广播完成。
+    pub fn signal_complete(&self) {
+        self.signal(PendingResult::Complete);
+    }
+
+    /// 广播声卡被移除。
+    pub fn signal_removed(&self) {
+        self.signal(PendingResult::CardRemoved);
+    }
+    /// 广播失败。
+    #[allow(dead_code)]
+    pub fn signal_failed(&self, error: String) {
+        self.signal(PendingResult::Failed(error));
+    }
+
+    fn signal(&self, result: PendingResult) {
+        if let Ok(mut guard) = self.result.lock() {
+            if guard.is_none() {
+                *guard = Some(result);
+                self.cond.notify_all();
+            }
         }
     }
 }

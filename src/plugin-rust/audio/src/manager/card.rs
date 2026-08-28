@@ -42,8 +42,16 @@ pub fn update(
 }
 
 /// Card 删除：从 DeviceManager 移除。
+///
+/// 若有正在进行的 profile 切换等待项，广播 CardRemoved 让等待线程结束。
 pub fn delete(device_manager: &Arc<RwLock<DeviceManager>>, index: u32) {
     device_manager.write().remove_card(index);
+    // 广播 card removed，通知正在等待 profile 切换的线程
+    let wait = device_manager.write().take_pending_profile(index);
+    if let Some(wait) = wait {
+        eprintln!("[dde-audio] card removed during pending profile: card {index}");
+        wait.signal_removed();
+    }
     // TODO: 可能触发 default sink/source 重选
     eprintln!("[dde-audio] card delete: {index}");
 }
@@ -100,7 +108,7 @@ pub fn on_device_created(
         eprintln!("[dde-audio] complete pending profile: card {card_id}");
         let wait = device_manager.write().take_pending_profile(card_id);
         if let Some(wait) = wait {
-            wait.signal();
+            wait.signal_complete();
         }
     }
 }

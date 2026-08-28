@@ -250,6 +250,7 @@ impl AudioManager {
         use device_manager::DIRECTION_SINK;
         use device_manager::DIRECTION_SOURCE;
         use device_manager::PendingProfile;
+        use device_manager::PendingResult;
 
         // 记录切换前该声卡的设备方向（重建后需全部齐全）
         let required_directions = {
@@ -270,7 +271,14 @@ impl AudioManager {
             .set_pending_profile(card_id, wait.clone());
 
         pulse_card::set_card_profile(&self.pulse, card_id, profile)?;
-        wait.wait(std::time::Duration::from_secs(5))
+
+        // 阻塞等待 event_loop 通知：完成/声卡移除/失败/超时。
+        let result = wait.wait(std::time::Duration::from_secs(5))?;
+        match result {
+            PendingResult::Complete => Ok(()),
+            PendingResult::CardRemoved => Err(format!("card {card_id} removed during profile switch")),
+            PendingResult::Failed(e) => Err(format!("profile switch failed: {e}")),
+        }
     }
     /// 设置端口启用/禁用。
     ///
