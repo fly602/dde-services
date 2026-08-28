@@ -104,15 +104,48 @@ pub fn is_port_enabled(
     })
 }
 
-/// 查询单个声卡信息，构造 `Card`。
+/// 声卡端口信息（backend 表示，与 manager 解耦）。
+#[derive(Clone, Debug)]
+pub struct BackendCardPort {
+    pub name: String,
+    pub description: String,
+    pub direction: u32,
+    /// 端口关联的 profile 名。
+    pub profiles: Vec<String>,
+    /// 端口是否可用。
+    pub available: bool,
+}
+
+/// 声卡 profile 信息（backend 表示，与 manager 解耦）。
+#[derive(Clone, Debug)]
+pub struct BackendCardProfile {
+    pub name: String,
+    pub description: String,
+    /// 越高越适合作为默认。
+    pub priority: u32,
+    /// 是否可用。
+    pub available: bool,
+}
+
+/// 声卡信息（backend 表示，与 manager 解耦）。
+#[derive(Clone, Debug)]
+pub struct BackendCard {
+    pub index: u32,
+    pub name: String,
+    pub active_profile: String,
+    pub ports: Vec<BackendCardPort>,
+    pub profiles: Vec<BackendCardProfile>,
+}
+
+/// 查询单个声卡信息。
 pub fn query_info(
     pulse: &PulseManager,
     index: u32,
-) -> Result<crate::manager::card::Card, String> {
+) -> Result<BackendCard, String> {
     use libpulse_binding::callbacks::ListResult;
 
     pulse.execute(|ctx, tx| {
-        let mut state: Option<crate::manager::card::Card> = None;
+        let mut state: Option<BackendCard> = None;
         ctx.introspect().get_card_info_by_index(index, move |res| {
             match res {
                 ListResult::Item(info) => {
@@ -128,12 +161,12 @@ pub fn query_info(
     .ok_or_else(|| format!("card {index} not found"))
 }
 
-/// 查询所有声卡信息，返回 `Vec<Card>`。
-pub fn query_list(pulse: &PulseManager) -> Result<Vec<crate::manager::card::Card>, String> {
+/// 查询所有声卡信息。
+pub fn query_list(pulse: &PulseManager) -> Result<Vec<BackendCard>, String> {
     use libpulse_binding::callbacks::ListResult;
 
     pulse.execute(|ctx, tx| {
-        let mut list: Vec<crate::manager::card::Card> = Vec::new();
+        let mut list: Vec<BackendCard> = Vec::new();
         ctx.introspect().get_card_info_list(move |res| {
             match res {
                 ListResult::Item(info) => {
@@ -151,29 +184,28 @@ pub fn query_list(pulse: &PulseManager) -> Result<Vec<crate::manager::card::Card
     })
 }
 
-fn state_from_info(info: &libpulse_binding::context::introspect::CardInfo) -> crate::manager::card::Card {
+fn state_from_info(info: &libpulse_binding::context::introspect::CardInfo) -> BackendCard {
     use libpulse_binding::def::PortAvailable;
     use libpulse_binding::direction;
 
     let ports = info
         .ports
         .iter()
-        .map(|p| crate::manager::card::CardPortInfo {
+        .map(|p| BackendCardPort {
             name: p.name.as_deref().unwrap_or("").to_owned(),
-            enabled: p.available != PortAvailable::No,
-            bluetooth: false,
             description: p.description.as_deref().unwrap_or("").to_owned(),
             direction: if p.direction.contains(direction::FlagSet::OUTPUT) { 0 } else { 1 },
             profiles: p.profiles.iter()
                 .filter_map(|prof| prof.name.as_deref().map(|n| n.to_owned()))
                 .collect(),
+            available: p.available != PortAvailable::No,
         })
         .collect();
 
     let profiles = info
         .profiles
         .iter()
-        .map(|p| crate::manager::card::CardProfile {
+        .map(|p| BackendCardProfile {
             name: p.name.as_deref().unwrap_or("").to_owned(),
             description: p.description.as_deref().unwrap_or("").to_owned(),
             priority: p.priority,
@@ -181,7 +213,7 @@ fn state_from_info(info: &libpulse_binding::context::introspect::CardInfo) -> cr
         })
         .collect();
 
-    crate::manager::card::Card {
+    BackendCard {
         index: info.index,
         name: info.name.as_deref().unwrap_or("").to_owned(),
         active_profile: info.active_profile.as_ref()

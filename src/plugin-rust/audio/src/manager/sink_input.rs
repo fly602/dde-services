@@ -16,7 +16,7 @@ use zbus::interface;
 
 use crate::backend::pulse::PulseManager;
 use crate::backend::pulse::sink_input as pulse_sink_input;
-
+use super::device_manager::DeviceManager;
 /// SinkInput（播放流）状态。
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize, zbus::zvariant::Type)]
 pub struct SinkInput {
@@ -30,7 +30,21 @@ pub struct SinkInput {
     pub support_fade: bool,
 }
 
-use super::device_manager::DeviceManager;
+impl From<crate::backend::pulse::sink_input::BackendSinkInput> for SinkInput {
+    fn from(b: crate::backend::pulse::sink_input::BackendSinkInput) -> Self {
+        Self {
+            index: b.index,
+            name: b.name,
+            mute: b.mute,
+            volume: b.volume,
+            balance: b.balance,
+            support_balance: true,
+            fade: b.fade,
+            support_fade: true,
+        }
+    }
+}
+
 
 /// SinkInput D-Bus 对象。
 pub struct SinkInputInterface {
@@ -72,7 +86,7 @@ impl SinkInputInterface {
         connection: &zbus::blocking::Connection,
         index: u32,
     ) -> Result<(), String> {
-        let state = pulse_sink_input::query_info(pulse, index)?;
+        let state: SinkInput = pulse_sink_input::query_info(pulse, index)?.into();
         device_manager.write().add_sink_input(index, state);
         eprintln!("[dde-audio] sink input new: {index}");
 
@@ -90,7 +104,7 @@ impl SinkInputInterface {
         device_manager: &Arc<RwLock<DeviceManager>>,
         index: u32,
     ) -> Result<(), String> {
-        let state = pulse_sink_input::query_info(pulse, index)?;
+        let state: SinkInput = pulse_sink_input::query_info(pulse, index)?.into();
         device_manager.write().update_sink_input(index, state);
         eprintln!("[dde-audio] sink input update: {index}");
         Ok(())

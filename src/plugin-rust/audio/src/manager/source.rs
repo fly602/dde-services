@@ -16,7 +16,7 @@ use zbus::interface;
 
 use crate::backend::pulse::PulseManager;
 use crate::backend::pulse::source as pulse_source;
-
+use super::device_manager::DeviceManager;
 /// Source（输入设备）状态。
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize, zbus::zvariant::Type)]
 pub struct Source {
@@ -35,7 +35,31 @@ pub struct Source {
     pub card: u32,
 }
 
-use super::device_manager::DeviceManager;
+impl From<crate::backend::pulse::source::BackendSource> for Source {
+    fn from(b: crate::backend::pulse::source::BackendSource) -> Self {
+        let from_port = |p: crate::backend::pulse::sink::BackendPort| super::sink::Port {
+            name: p.name,
+            description: p.description,
+            direction: p.direction,
+        };
+        Self {
+            index: b.index,
+            name: b.name,
+            description: b.description,
+            base_volume: b.base_volume,
+            mute: b.mute,
+            volume: b.volume,
+            balance: b.balance,
+            support_balance: true,
+            fade: b.fade,
+            support_fade: true,
+            ports: b.ports.into_iter().map(from_port).collect(),
+            active_port: from_port(b.active_port),
+            card: b.card,
+        }
+    }
+}
+
 
 /// Source D-Bus 对象。
 pub struct SourceInterface {
@@ -76,7 +100,7 @@ impl SourceInterface {
         connection: &zbus::blocking::Connection,
         index: u32,
     ) -> Result<(), String> {
-        let state = pulse_source::query_info(pulse, index)?;
+        let state: Source = pulse_source::query_info(pulse, index)?.into();
         device_manager.write().add_source(index, state);
         eprintln!("[dde-audio] source new: {index}");
 
@@ -94,7 +118,7 @@ impl SourceInterface {
         device_manager: &Arc<RwLock<DeviceManager>>,
         index: u32,
     ) -> Result<(), String> {
-        let state = pulse_source::query_info(pulse, index)?;
+        let state: Source = pulse_source::query_info(pulse, index)?.into();
         device_manager.write().update_source(index, state);
         eprintln!("[dde-audio] source update: {index}");
         Ok(())

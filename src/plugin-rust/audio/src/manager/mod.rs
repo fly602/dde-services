@@ -324,12 +324,14 @@ fn init_devices(
 
     // cards（无 D-Bus 对象，只填状态）
     for state in card::query_list(pulse)? {
+        let state: crate::manager::card::Card = state.into();
         device_manager.write().add_card(state.index, state);
     }
 
     // sinks（注册 D-Bus 对象）
     for state in sink::query_list(pulse)? {
         let index = state.index;
+        let state: crate::manager::sink::Sink = state.into();
         device_manager.write().add_sink(index, state);
         let obj = SinkInterface::new_instance(index, pulse.clone(), device_manager.clone(), connection.clone());
         connection
@@ -341,6 +343,7 @@ fn init_devices(
     // sources
     for state in source::query_list(pulse)? {
         let index = state.index;
+        let state: crate::manager::source::Source = state.into();
         device_manager.write().add_source(index, state);
         let obj = SourceInterface::new_instance(index, pulse.clone(), device_manager.clone(), connection.clone());
         connection
@@ -352,6 +355,7 @@ fn init_devices(
     // sink_inputs
     for state in sink_input::query_list(pulse)? {
         let index = state.index;
+        let state: crate::manager::sink_input::SinkInput = state.into();
         device_manager.write().add_sink_input(index, state);
         let obj = SinkInputInterface::new_instance(index, pulse.clone(), device_manager.clone(), connection.clone());
         connection

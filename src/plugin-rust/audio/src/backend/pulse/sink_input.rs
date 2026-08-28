@@ -146,15 +146,26 @@ pub fn set_fade(pulse: &PulseManager, index: u32, value: f64) -> Result<(), Stri
     Ok(())
 }
 
-/// 查询单个 SinkInput 信息，构造 `SinkInput`。
+/// SinkInput 信息（backend 表示，与 manager 解耦）。
+#[derive(Clone, Debug)]
+pub struct BackendSinkInput {
+    pub index: u32,
+    pub name: String,
+    pub mute: bool,
+    pub volume: f64,
+    pub balance: f64,
+    pub fade: f64,
+}
+
+/// 查询单个 SinkInput 信息。
 pub fn query_info(
     pulse: &PulseManager,
     index: u32,
-) -> Result<crate::manager::sink_input::SinkInput, String> {
+) -> Result<BackendSinkInput, String> {
     use libpulse_binding::callbacks::ListResult;
 
     pulse.execute(|ctx, tx| {
-        let mut state: Option<crate::manager::sink_input::SinkInput> = None;
+        let mut state: Option<BackendSinkInput> = None;
         ctx.introspect().get_sink_input_info(index, move |res| {
             match res {
                 ListResult::Item(info) => {
@@ -170,12 +181,12 @@ pub fn query_info(
     .ok_or_else(|| format!("sink input {index} not found"))
 }
 
-/// 查询所有 SinkInput 信息，返回 `Vec<SinkInput>`。
-pub fn query_list(pulse: &PulseManager) -> Result<Vec<crate::manager::sink_input::SinkInput>, String> {
+/// 查询所有 SinkInput 信息。
+pub fn query_list(pulse: &PulseManager) -> Result<Vec<BackendSinkInput>, String> {
     use libpulse_binding::callbacks::ListResult;
 
     pulse.execute(|ctx, tx| {
-        let mut list: Vec<crate::manager::sink_input::SinkInput> = Vec::new();
+        let mut list: Vec<BackendSinkInput> = Vec::new();
         ctx.introspect().get_sink_input_info_list(move |res| {
             match res {
                 ListResult::Item(info) => {
@@ -193,19 +204,17 @@ pub fn query_list(pulse: &PulseManager) -> Result<Vec<crate::manager::sink_input
     })
 }
 
-fn state_from_info(info: &libpulse_binding::context::introspect::SinkInputInfo) -> crate::manager::sink_input::SinkInput {
+fn state_from_info(info: &libpulse_binding::context::introspect::SinkInputInfo) -> BackendSinkInput {
     use libpulse_binding::volume::Volume;
 
     let vol = info.volume.avg();
 
-    crate::manager::sink_input::SinkInput {
+    BackendSinkInput {
         index: info.index,
         name: info.name.as_deref().unwrap_or("").to_owned(),
         mute: info.mute,
         volume: vol.0 as f64 / Volume::NORMAL.0 as f64,
         balance: info.volume.get_balance(&info.channel_map) as f64,
-        support_balance: true,
         fade: info.volume.get_fade(&info.channel_map) as f64,
-        support_fade: true,
     }
 }

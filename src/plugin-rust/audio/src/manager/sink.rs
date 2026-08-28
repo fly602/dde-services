@@ -16,7 +16,7 @@ use zbus::interface;
 
 use crate::backend::pulse::PulseManager;
 use crate::backend::pulse::sink as pulse_sink;
-
+use super::device_manager::DeviceManager;
 /// 音频端口信息。
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize, zbus::zvariant::Type)]
 pub struct Port {
@@ -43,7 +43,31 @@ pub struct Sink {
     pub card: u32,
 }
 
-use super::device_manager::DeviceManager;
+impl From<crate::backend::pulse::sink::BackendSink> for Sink {
+    fn from(b: crate::backend::pulse::sink::BackendSink) -> Self {
+        let from_port = |p: crate::backend::pulse::sink::BackendPort| Port {
+            name: p.name,
+            description: p.description,
+            direction: p.direction,
+        };
+        Self {
+            index: b.index,
+            name: b.name,
+            description: b.description,
+            base_volume: b.base_volume,
+            mute: b.mute,
+            volume: b.volume,
+            balance: b.balance,
+            support_balance: true,
+            fade: b.fade,
+            support_fade: true,
+            ports: b.ports.into_iter().map(from_port).collect(),
+            active_port: from_port(b.active_port),
+            card: b.card,
+        }
+    }
+}
+
 
 /// Sink D-Bus 对象。
 ///
@@ -88,7 +112,7 @@ impl SinkInterface {
         connection: &zbus::blocking::Connection,
         index: u32,
     ) -> Result<(), String> {
-        let state = pulse_sink::query_info(pulse, index)?;
+        let state: Sink = pulse_sink::query_info(pulse, index)?.into();
         device_manager.write().add_sink(index, state);
         eprintln!("[dde-audio] sink new: {index}");
         let obj = Self::new_instance(index, pulse.clone(), device_manager.clone(), connection.clone());
@@ -107,7 +131,7 @@ impl SinkInterface {
         device_manager: &Arc<RwLock<DeviceManager>>,
         index: u32,
     ) -> Result<(), String> {
-        let state = pulse_sink::query_info(pulse, index)?;
+        let state: Sink = pulse_sink::query_info(pulse, index)?.into();
         device_manager.write().update_sink(index, state);
         eprintln!("[dde-audio] sink update: {index}");
         Ok(())

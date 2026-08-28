@@ -19,7 +19,7 @@ use super::device_manager::DeviceManager;
 
 /// 声卡端口信息。
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize, zbus::zvariant::Type)]
-pub struct CardPortInfo {
+pub struct PortInfo {
     pub name: String,
     pub enabled: bool,
     pub bluetooth: bool,
@@ -29,7 +29,7 @@ pub struct CardPortInfo {
     pub profiles: Vec<String>,
 }
 
-impl CardPortInfo {
+impl PortInfo {
     /// 选择该端口最合适的 profile。
     ///
     /// 当前返回第一个可用的 profile 名称。
@@ -40,7 +40,7 @@ impl CardPortInfo {
 }
 /// 声卡支持的 profile。
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize, zbus::zvariant::Type)]
-pub struct CardProfile {
+pub struct Profile {
     pub name: String,
     pub description: String,
     /// 越高越适合作为默认 profile。
@@ -55,9 +55,39 @@ pub struct Card {
     pub index: u32,
     pub name: String,
     pub active_profile: String,
-    pub ports: Vec<CardPortInfo>,
+    pub ports: Vec<PortInfo>,
     /// 该声卡支持的所有 profile。
-    pub profiles: Vec<CardProfile>,
+    pub profiles: Vec<Profile>,
+}
+
+impl From<crate::backend::pulse::card::BackendCard> for Card {
+    fn from(b: crate::backend::pulse::card::BackendCard) -> Self {
+        Self {
+            index: b.index,
+            name: b.name,
+            active_profile: b.active_profile,
+            ports: b.ports
+                .into_iter()
+                .map(|p| PortInfo {
+                    name: p.name,
+                    enabled: p.available,
+                    bluetooth: false,
+                    description: p.description,
+                    direction: p.direction,
+                    profiles: p.profiles,
+                })
+                .collect(),
+            profiles: b.profiles
+                .into_iter()
+                .map(|p| Profile {
+                    name: p.name,
+                    description: p.description,
+                    priority: p.priority,
+                    available: p.available,
+                })
+                .collect(),
+        }
+    }
 }
 
 /// 方向掩码：输出。
@@ -161,7 +191,7 @@ pub fn new(
     device_manager: &Arc<RwLock<DeviceManager>>,
     index: u32,
 ) -> Result<(), String> {
-    let state = pulse_card::query_info(pulse, index)?;
+    let state: Card = pulse_card::query_info(pulse, index)?.into();
     device_manager.write().add_card(index, state);
     eprintln!("[dde-audio] card new: {index}");
     Ok(())
@@ -173,7 +203,7 @@ pub fn update(
     device_manager: &Arc<RwLock<DeviceManager>>,
     index: u32,
 ) -> Result<(), String> {
-    let state = pulse_card::query_info(pulse, index)?;
+    let state: Card = pulse_card::query_info(pulse, index)?.into();
     device_manager.write().update_card(index, state);
     eprintln!("[dde-audio] card update: {index}");
     Ok(())

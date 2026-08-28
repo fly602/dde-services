@@ -168,15 +168,32 @@ pub fn get_meter(_pulse: &PulseManager, _index: u32) -> Result<u32, String> {
     Err("unimplemented".into())
 }
 
-/// 查询单个 Source 信息，构造 `Source`。
+/// Source 信息（backend 表示，与 manager 解耦）。
+#[derive(Clone, Debug)]
+pub struct BackendSource {
+    pub index: u32,
+    pub name: String,
+    pub description: String,
+    /// 相对 Volume::NORMAL 的基准音量。
+    pub base_volume: f64,
+    pub mute: bool,
+    pub volume: f64,
+    pub balance: f64,
+    pub fade: f64,
+    pub ports: Vec<super::sink::BackendPort>,
+    pub active_port: super::sink::BackendPort,
+    pub card: u32,
+}
+
+/// 查询单个 Source 信息。
 pub fn query_info(
     pulse: &PulseManager,
     index: u32,
-) -> Result<crate::manager::source::Source, String> {
+) -> Result<BackendSource, String> {
     use libpulse_binding::callbacks::ListResult;
 
     pulse.execute(|ctx, tx| {
-        let mut state: Option<crate::manager::source::Source> = None;
+        let mut state: Option<BackendSource> = None;
         ctx.introspect().get_source_info_by_index(index, move |res| {
             match res {
                 ListResult::Item(info) => {
@@ -192,12 +209,12 @@ pub fn query_info(
     .ok_or_else(|| format!("source {index} not found"))
 }
 
-/// 查询所有 Source 信息，返回 `Vec<Source>`。
-pub fn query_list(pulse: &PulseManager) -> Result<Vec<crate::manager::source::Source>, String> {
+/// 查询所有 Source 信息。
+pub fn query_list(pulse: &PulseManager) -> Result<Vec<BackendSource>, String> {
     use libpulse_binding::callbacks::ListResult;
 
     pulse.execute(|ctx, tx| {
-        let mut list: Vec<crate::manager::source::Source> = Vec::new();
+        let mut list: Vec<BackendSource> = Vec::new();
         ctx.introspect().get_source_info_list(move |res| {
             match res {
                 ListResult::Item(info) => {
@@ -215,24 +232,25 @@ pub fn query_list(pulse: &PulseManager) -> Result<Vec<crate::manager::source::So
     })
 }
 
-fn state_from_info(info: &libpulse_binding::context::introspect::SourceInfo) -> crate::manager::source::Source {
+fn state_from_info(info: &libpulse_binding::context::introspect::SourceInfo) -> BackendSource {
     use libpulse_binding::volume::Volume;
+    use super::sink::BackendPort;
 
     let ports = info
         .ports
         .iter()
-        .map(|p| crate::manager::sink::Port {
+        .map(|p| BackendPort {
             name: p.name.as_deref().unwrap_or("").to_owned(),
             description: p.description.as_deref().unwrap_or("").to_owned(),
             direction: 1, // source 方向固定为输入
         })
         .collect();
 
-    let active_port = info.active_port.as_ref().map(|p| crate::manager::sink::Port {
+    let active_port = info.active_port.as_ref().map(|p| BackendPort {
         name: p.name.as_deref().unwrap_or("").to_owned(),
         description: p.description.as_deref().unwrap_or("").to_owned(),
         direction: 1,
-    }).unwrap_or_else(|| crate::manager::sink::Port {
+    }).unwrap_or_else(|| BackendPort {
         name: String::new(),
         description: String::new(),
         direction: 1,
@@ -241,7 +259,7 @@ fn state_from_info(info: &libpulse_binding::context::introspect::SourceInfo) -> 
     let vol = info.volume.avg();
     let base = info.base_volume;
 
-    crate::manager::source::Source {
+    BackendSource {
         index: info.index,
         name: info.name.as_deref().unwrap_or("").to_owned(),
         description: info.description.as_deref().unwrap_or("").to_owned(),
@@ -249,9 +267,7 @@ fn state_from_info(info: &libpulse_binding::context::introspect::SourceInfo) -> 
         mute: info.mute,
         volume: vol.0 as f64 / Volume::NORMAL.0 as f64,
         balance: info.volume.get_balance(&info.channel_map) as f64,
-        support_balance: true,
         fade: info.volume.get_fade(&info.channel_map) as f64,
-        support_fade: true,
         ports,
         active_port,
         card: info.card.unwrap_or(u32::MAX),
