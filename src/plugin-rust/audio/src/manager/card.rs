@@ -50,7 +50,7 @@ pub struct Profile {
 }
 /// 声卡（Card）状态。
 ///
-/// `status`/`operation` 是运行时状态。`operation` 含 Mutex 不可序列化，
+/// `status`/`change` 是运行时状态。`change` 含 Mutex 不可序列化，
 /// 用 `#[serde(skip)]` 跳过（反序列化时为 None）。
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct Card {
@@ -64,7 +64,7 @@ pub struct Card {
     pub status: CardStatus,
     /// 进行中的状态变更（同步手柄）。
     #[serde(skip)]
-    pub operation: Option<Arc<StatusChange>>,
+    pub change: Option<Arc<StatusChange>>,
 }
 
 impl From<crate::backend::pulse::card::BackendCard> for Card {
@@ -94,7 +94,7 @@ impl From<crate::backend::pulse::card::BackendCard> for Card {
                 })
                 .collect(),
             status: CardStatus::Ready,
-            operation: None,
+            change: None,
         }
     }
 }
@@ -120,7 +120,7 @@ pub enum ChangeResult {
     /// 完成（设备重建齐全）。
     Complete,
     /// 声卡被移除，操作终止。
-    CardRemoved,
+    Removed,
     /// 失败（当前无生产者，为三态协议预留）。
     #[allow(dead_code)]
     Failed(String),
@@ -195,7 +195,7 @@ impl StatusChange {
 
     /// 广播声卡被移除。
     pub fn signal_removed(&self) {
-        self.signal(ChangeResult::CardRemoved);
+        self.signal(ChangeResult::Removed);
     }
 
     /// 广播失败。
@@ -241,11 +241,11 @@ pub fn update(
 
 /// Card 删除：从 DeviceManager 移除。
 ///
-/// 若有进行中的 profile 切换操作，广播 CardRemoved 让等待线程结束。
+/// 若有进行中的 profile 切换操作，广播 Removed 让等待线程结束。
 pub fn delete(device_manager: &Arc<RwLock<DeviceManager>>, index: u32) {
     let removed = device_manager.write().remove_card(index);
     if let Some(card) = removed {
-        if let Some(op) = card.operation {
+        if let Some(op) = card.change {
             eprintln!("[dde-audio] card removed during profile switch: card {index}");
             op.signal_removed();
         }
@@ -287,7 +287,7 @@ pub fn on_device_created(
         if card.status != CardStatus::Pending {
             return;
         }
-        let op = match &card.operation {
+        let op = match &card.change {
             Some(op) => op,
             None => return,
         };
@@ -301,7 +301,7 @@ pub fn on_device_created(
 
     if all_ready {
         eprintln!("[dde-audio] complete pending profile: card {card_id}");
-        let op = device_manager.write().cards.get_mut(&card_id).and_then(|c| c.operation.take());
+        let op = device_manager.write().cards.get_mut(&card_id).and_then(|c| c.change.take());
         if let Some(op) = op {
             op.signal_complete();
         }

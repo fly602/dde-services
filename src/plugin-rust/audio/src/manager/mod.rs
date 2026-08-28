@@ -243,7 +243,7 @@ impl AudioManager {
 
     /// 切换声卡 profile 并等待设备重建完成。
     ///
-    /// 置 Pending + operation → 提交切换 → 阻塞等待 event_loop 通知设备创建完成。
+    /// 置 Pending + change → 提交切换 → 阻塞等待 event_loop 通知设备创建完成。
     /// 超时返回错误。
     fn switch_card_profile(&self, card_id: u32, profile: &str) -> Result<(), String> {
         use crate::backend::pulse::card as pulse_card;
@@ -267,7 +267,7 @@ impl AudioManager {
             let mut dm = self.device_manager.write();
             if let Some(card) = dm.cards.get_mut(&card_id) {
                 card.status = CardStatus::Pending;
-                card.operation = Some(op.clone());
+                card.change = Some(op.clone());
             }
         }
 
@@ -277,7 +277,7 @@ impl AudioManager {
         let result = op.wait(std::time::Duration::from_secs(5))?;
         match result {
             ChangeResult::Complete => Ok(()),
-            ChangeResult::CardRemoved => Err(format!("card {card_id} removed during profile switch")),
+            ChangeResult::Removed => Err(format!("card {card_id} removed during profile switch")),
             ChangeResult::Failed(e) => Err(format!("profile switch failed: {e}")),
         }
     }
