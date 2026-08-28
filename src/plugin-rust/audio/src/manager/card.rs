@@ -48,9 +48,11 @@ pub struct Profile {
     /// 是否可用（unavailable 的 profile 无意义）。
     pub available: bool,
 }
-
 /// 声卡（Card）状态。
-#[derive(Clone, Debug, serde::Serialize, serde::Deserialize, zbus::zvariant::Type)]
+///
+/// `status`/`operation` 是运行时状态。`operation` 含 Mutex 不可序列化，
+/// 用 `#[serde(skip)]` 跳过（反序列化时为 None）。
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct Card {
     pub index: u32,
     pub name: String,
@@ -58,6 +60,11 @@ pub struct Card {
     pub ports: Vec<PortInfo>,
     /// 该声卡支持的所有 profile。
     pub profiles: Vec<Profile>,
+    /// 生命周期状态。
+    pub status: CardStatus,
+    /// 进行中的 profile 切换操作（同步手柄）。
+    #[serde(skip)]
+    pub operation: Option<Arc<ProfileSwitch>>,
 }
 
 impl From<crate::backend::pulse::card::BackendCard> for Card {
@@ -86,6 +93,8 @@ impl From<crate::backend::pulse::card::BackendCard> for Card {
                     available: p.available,
                 })
                 .collect(),
+            status: CardStatus::Ready,
+            operation: None,
         }
     }
 }
@@ -94,13 +103,20 @@ impl From<crate::backend::pulse::card::BackendCard> for Card {
 pub const DIRECTION_SINK: u32 = 1 << 0;
 /// 方向掩码：输入。
 pub const DIRECTION_SOURCE: u32 = 1 << 1;
+/// Card 生命周期状态。
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum CardStatus {
+    /// 正常可用。
+    Ready,
+    /// profile 切换中。
+    Pending,
+    /// 删除中。
+    Removing,
+}
 
-/// card 级别 profile 切换等待项。
-///
-/// set_profile 阻塞等待，event_loop 设备创建完成后通知。
-/// pending 操作的最终结果。
+/// 一次 profile 切换操作的最终结果。
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub enum PendingResult {
+pub enum SwitchResult {
     /// 完成（设备重建齐全）。
     Complete,
     /// 声卡被移除，操作终止。
@@ -110,7 +126,7 @@ pub enum PendingResult {
     Failed(String),
 }
 
-/// card 级别 profile 切换等待项。
+/// 一次 profile 切换操作的同步手柄。
 ///
 /// set_profile 阻塞等待，event_loop 设备创建完成后通知。
 ///
@@ -118,14 +134,26 @@ pub enum PendingResult {
 /// 设备重建后所有方向齐全才认为完成。
 ///
 /// 结果是广播的（`notify_all`），多个等待者可同时收到 complete/card removed。
-pub struct PendingProfile {
-    result: std::sync::Mutex<Option<PendingResult>>,
+pub struct ProfileSwitch {
+    result: std::sync::Mutex<Option<SwitchResult>>,
     cond: std::sync::Condvar,
     /// 需要重建的方向掩码：bit0=输出(sink)，bit1=输入(source)。
     required_directions: u32,
 }
 
-impl PendingProfile {
+impl std::fmt::Debug for ProfileSwitch {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ProfileSwitch")
+            .field("required_directions", &self.required_directions)
+            .field(
+                "result",
+                &self.result.lock().map(|r| r.as_ref().cloned()).unwrap_or(None),
+            )
+            .finish()
+    }
+}
+
+impl ProfileSwitch {
     /// 创建等待项，指定需要重建的方向。
     pub fn new(required_directions: u32) -> Arc<Self> {
         Arc::new(Self {
@@ -141,7 +169,7 @@ impl PendingProfile {
     }
 
     /// 阻塞等待结果，超时返回错误。
-    pub fn wait(&self, timeout: std::time::Duration) -> Result<PendingResult, String> {
+    pub fn wait(&self, timeout: std::time::Duration) -> Result<SwitchResult, String> {
         let mut result = self
             .result
             .lock()
@@ -161,21 +189,21 @@ impl PendingProfile {
 
     /// 广播完成。
     pub fn signal_complete(&self) {
-        self.signal(PendingResult::Complete);
+        self.signal(SwitchResult::Complete);
     }
 
     /// 广播声卡被移除。
     pub fn signal_removed(&self) {
-        self.signal(PendingResult::CardRemoved);
+        self.signal(SwitchResult::CardRemoved);
     }
 
     /// 广播失败。
     #[allow(dead_code)]
     pub fn signal_failed(&self, error: String) {
-        self.signal(PendingResult::Failed(error));
+        self.signal(SwitchResult::Failed(error));
     }
 
-    fn signal(&self, result: PendingResult) {
+    fn signal(&self, result: SwitchResult) {
         if let Ok(mut guard) = self.result.lock() {
             if guard.is_none() {
                 *guard = Some(result);
@@ -184,6 +212,7 @@ impl PendingProfile {
         }
     }
 }
+
 
 /// Card 新增：查询状态写入 DeviceManager。
 pub fn new(
@@ -211,28 +240,28 @@ pub fn update(
 
 /// Card 删除：从 DeviceManager 移除。
 ///
-/// 若有正在进行的 profile 切换等待项，广播 CardRemoved 让等待线程结束。
+/// 若有进行中的 profile 切换操作，广播 CardRemoved 让等待线程结束。
 pub fn delete(device_manager: &Arc<RwLock<DeviceManager>>, index: u32) {
-    device_manager.write().remove_card(index);
-    // 广播 card removed，通知正在等待 profile 切换的线程
-    let wait = device_manager.write().take_pending_profile(index);
-    if let Some(wait) = wait {
-        eprintln!("[dde-audio] card removed during pending profile: card {index}");
-        wait.signal_removed();
+    let removed = device_manager.write().remove_card(index);
+    if let Some(card) = removed {
+        if let Some(op) = card.operation {
+            eprintln!("[dde-audio] card removed during profile switch: card {index}");
+            op.signal_removed();
+        }
     }
     // TODO: 可能触发 default sink/source 重选
     eprintln!("[dde-audio] card delete: {index}");
 }
 
-/// 设备创建后检查 pending profile 切换是否完成。
+/// 设备创建后检查 profile 切换是否完成。
 ///
-/// 若设备所属声卡正在切换 profile，检查所需方向（切换前的 sink/source）
-/// 是否都已重建，齐全则通知等待线程并清除 pending。
+/// 若设备所属声卡处于 Pending 状态，检查所需方向（切换前的 sink/source）
+/// 是否都已重建，齐全则回 Ready 并通知等待线程。
 pub fn on_device_created(
     device_manager: &Arc<RwLock<DeviceManager>>,
     device_index: u32,
     is_sink: bool,
-    ) {
+) {
     let card_id = {
         let dm = device_manager.read();
         if is_sink {
@@ -247,33 +276,36 @@ pub fn on_device_created(
         None => return,
     };
 
-    // 无 pending profile 则忽略
-    if device_manager.read().get_pending_profile(card_id).is_none() {
-        return;
-    }
-
-    // 检查所需方向是否都已重建
+    // 非 Pending 状态则忽略
     let all_ready = {
         let dm = device_manager.read();
-        let wait = dm.get_pending_profile(card_id);
-        match wait {
-            Some(wait) => {
-                let required = wait.required_directions();
-                let sink_ok = required & DIRECTION_SINK == 0
-                    || dm.sinks.values().any(|s| s.card == card_id);
-                let source_ok = required & DIRECTION_SOURCE == 0
-                    || dm.sources.values().any(|s| s.card == card_id);
-                sink_ok && source_ok
-            }
-            None => false,
+        let card = match dm.cards.get(&card_id) {
+            Some(c) => c,
+            None => return,
+        };
+        if card.status != CardStatus::Pending {
+            return;
         }
+        let op = match &card.operation {
+            Some(op) => op,
+            None => return,
+        };
+        let required = op.required_directions();
+        let sink_ok = required & DIRECTION_SINK == 0
+            || dm.sinks.values().any(|s| s.card == card_id);
+        let source_ok = required & DIRECTION_SOURCE == 0
+            || dm.sources.values().any(|s| s.card == card_id);
+        sink_ok && source_ok
     };
 
     if all_ready {
         eprintln!("[dde-audio] complete pending profile: card {card_id}");
-        let wait = device_manager.write().take_pending_profile(card_id);
-        if let Some(wait) = wait {
-            wait.signal_complete();
+        let op = device_manager.write().cards.get_mut(&card_id).and_then(|c| c.operation.take());
+        if let Some(op) = op {
+            op.signal_complete();
+        }
+        if let Some(card) = device_manager.write().cards.get_mut(&card_id) {
+            card.status = CardStatus::Ready;
         }
     }
 }

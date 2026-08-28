@@ -243,11 +243,11 @@ impl AudioManager {
 
     /// 切换声卡 profile 并等待设备重建完成。
     ///
-    /// 置 pending profile → 提交切换 → 阻塞等待 event_loop 通知设备创建完成。
+    /// 置 Pending + operation → 提交切换 → 阻塞等待 event_loop 通知设备创建完成。
     /// 超时返回错误。
     fn switch_card_profile(&self, card_id: u32, profile: &str) -> Result<(), String> {
         use crate::backend::pulse::card as pulse_card;
-        use card::{DIRECTION_SINK, DIRECTION_SOURCE, PendingProfile, PendingResult};
+        use card::{CardStatus, DIRECTION_SINK, DIRECTION_SOURCE, ProfileSwitch, SwitchResult};
 
         // 记录切换前该声卡的设备方向（重建后需全部齐全）
         let required_directions = {
@@ -262,19 +262,23 @@ impl AudioManager {
             dirs
         };
 
-        let wait = PendingProfile::new(required_directions);
-        self.device_manager
-            .write()
-            .set_pending_profile(card_id, wait.clone());
+        let op = ProfileSwitch::new(required_directions);
+        {
+            let mut dm = self.device_manager.write();
+            if let Some(card) = dm.cards.get_mut(&card_id) {
+                card.status = CardStatus::Pending;
+                card.operation = Some(op.clone());
+            }
+        }
 
         pulse_card::set_card_profile(&self.pulse, card_id, profile)?;
 
         // 阻塞等待 event_loop 通知：完成/声卡移除/失败/超时。
-        let result = wait.wait(std::time::Duration::from_secs(5))?;
+        let result = op.wait(std::time::Duration::from_secs(5))?;
         match result {
-            PendingResult::Complete => Ok(()),
-            PendingResult::CardRemoved => Err(format!("card {card_id} removed during profile switch")),
-            PendingResult::Failed(e) => Err(format!("profile switch failed: {e}")),
+            SwitchResult::Complete => Ok(()),
+            SwitchResult::CardRemoved => Err(format!("card {card_id} removed during profile switch")),
+            SwitchResult::Failed(e) => Err(format!("profile switch failed: {e}")),
         }
     }
     /// 设置端口启用/禁用。

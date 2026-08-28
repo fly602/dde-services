@@ -14,7 +14,6 @@
 //!   的具体逻辑（查 pulse 构造状态），delete 有回收也在子 device 处理
 
 use std::collections::HashMap;
-use std::sync::Arc;
 
 // 各设备状态结构体定义在对应子模块，DeviceManager 直接引用子模块类型。
 use super::card;
@@ -103,8 +102,6 @@ pub struct DeviceManager {
     pub cards: HashMap<u32, card::Card>,
     pub default_sink: Option<String>,
     pub default_source: Option<String>,
-    /// 正在切换 profile 的声卡：card_id → 等待项。
-    pub pending_profiles: HashMap<u32, Arc<card::PendingProfile>>,
     /// PulseAudio 模块状态：module 名 → 状态。
     pub modules: HashMap<String, crate::backend::pulse::module::ModuleState>,
 }
@@ -256,22 +253,6 @@ impl DeviceManager {
         self.modules.remove(name);
     }
 
-    // ===== Pending Profile =====
-
-    /// 记录声卡 profile 切换等待项。
-    pub fn set_pending_profile(&mut self, card_id: u32, wait: Arc<card::PendingProfile>) {
-        self.pending_profiles.insert(card_id, wait);
-    }
-
-    /// 获取声卡 profile 切换等待项。
-    pub fn get_pending_profile(&self, card_id: u32) -> Option<Arc<card::PendingProfile>> {
-        self.pending_profiles.get(&card_id).cloned()
-    }
-
-    /// 移除声卡 profile 切换等待项。
-    pub fn take_pending_profile(&mut self, card_id: u32) -> Option<Arc<card::PendingProfile>> {
-        self.pending_profiles.remove(&card_id)
-    }
 }
 
 
