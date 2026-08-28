@@ -79,8 +79,57 @@ fn emit_device_changed(
     emit_properties_changed(connection, path, interface_name, &HashMap::new(), props);
 }
 
+
+/// 设备新增后尝试完成 pending 端口设置。
+///
+/// 若该设备属于 pending 的声卡且方向匹配，设置端口并清除 pending。
+fn try_complete_pending_port(
+    pulse: &Arc<PulseManager>,
+    device_manager: &Arc<RwLock<DeviceManager>>,
+    device_index: u32,
+    is_sink: bool,
+) {
+    use crate::backend::pulse::sink as pulse_sink;
+    use crate::backend::pulse::source as pulse_source;
+
+    let pending = {
+        let dm = device_manager.read();
+        // 查找设备所属 card
+        let card_id = if is_sink {
+            dm.sinks.get(&device_index).map(|s| s.card)
+        } else {
+            dm.sources.get(&device_index).map(|s| s.card)
+        };
+        card_id.and_then(|cid| dm.pending_ports.get(&cid).cloned().map(|p| (cid, p)))
+    };
+
+    if let Some((card_id, pending)) = pending {
+        let direction_matches = if is_sink { pending.direction == 0 } else { pending.direction != 0 };
+        if direction_matches {
+            eprintln!(
+                "[dde-audio] complete pending port: card {card_id} device {device_index} port {}",
+                pending.port_name
+            );
+            let result = if is_sink {
+                pulse_sink::set_port(pulse, device_index, &pending.port_name)
+            } else {
+                pulse_source::set_port(pulse, device_index, &pending.port_name)
+            };
+            match result {
+                Ok(()) => {
+                    device_manager.write().take_pending_port(card_id);
+                }
+                Err(e) => {
+                    eprintln!("[dde-audio] complete pending port failed: {e}");
+                }
+            }
+        }
+    }
+}
+
 /// 事件循环管理器。
 pub struct EventLoop {
+
     handle: Option<thread::JoinHandle<()>>,
 }
 
@@ -97,6 +146,7 @@ impl EventLoop {
                 match event {
                     PulseEvent::SinkAdded { index } => {
                         let _ = Sink::new(&pulse, &device_manager, &connection, index);
+                        try_complete_pending_port(&pulse, &device_manager, index, true);
                         emit_audio_list_changed(&connection, &["Sinks"]);
                     }
                     PulseEvent::SinkChanged { index } => {
@@ -115,6 +165,7 @@ impl EventLoop {
                     }
                     PulseEvent::SourceAdded { index } => {
                         let _ = Source::new(&pulse, &device_manager, &connection, index);
+                        try_complete_pending_port(&pulse, &device_manager, index, false);
                         emit_audio_list_changed(&connection, &["Sources"]);
                     }
                     PulseEvent::SourceChanged { index } => {

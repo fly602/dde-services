@@ -31,9 +31,19 @@ pub struct CardPortInfo {
     pub bluetooth: bool,
     pub description: String,
     pub direction: u32,
+    /// 该端口关联的可用 profile 名称。
+    pub profiles: Vec<String>,
 }
 
-/// 声卡信息。
+impl CardPortInfo {
+    /// 选择该端口最合适的 profile。
+    ///
+    /// 当前返回第一个可用的 profile 名称。
+    /// TODO: 按 profile 优先级/蓝牙模式选择最优。
+    pub fn select_profile(&self) -> Option<&str> {
+        self.profiles.first().map(|s| s.as_str())
+    }
+}
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize, zbus::zvariant::Type)]
 #[allow(dead_code)]
 pub struct CardInfo {
@@ -98,6 +108,13 @@ pub struct CardState {
     pub name: String,
     pub active_profile: String,
     pub ports: Vec<CardPortInfo>,
+}
+
+/// 待完成的端口设置（profile 切换完成后执行）。
+#[derive(Clone, Debug)]
+pub struct PendingPort {
+    pub port_name: String,
+    pub direction: u32,
 }
 
 
@@ -181,8 +198,12 @@ pub struct DeviceManager {
     pub cards: HashMap<u32, CardState>,
     pub default_sink: Option<String>,
     pub default_source: Option<String>,
+    /// 待完成的端口设置：card_id → PendingPort。
+    /// profile 切换完成后，新设备创建时据此设置端口。
+    pub pending_ports: HashMap<u32, PendingPort>,
+    /// PulseAudio 模块状态：module 名 → 状态。
+    pub modules: HashMap<String, crate::backend::pulse::module::ModuleState>,
 }
-
 impl DeviceManager {
     // ===== Sink =====
 
@@ -303,6 +324,46 @@ impl DeviceManager {
             .map(|c| card_to_export(c, true))
             .collect();
         serde_json::to_string(&list).unwrap_or_else(|_| "[]".into())
+    }
+
+    // ===== Pending Port =====
+
+    /// 记录待完成的端口设置。
+    pub fn set_pending_port(&mut self, card_id: u32, port_name: String, direction: u32) {
+        self.pending_ports.insert(
+            card_id,
+            PendingPort { port_name, direction },
+        );
+    }
+
+    /// 获取并移除待完成的端口设置。
+    pub fn take_pending_port(&mut self, card_id: u32) -> Option<PendingPort> {
+        self.pending_ports.remove(&card_id)
+    }
+
+    // ===== Module =====
+
+    /// 获取模块状态。
+    pub fn module_state(&self, name: &str) -> crate::backend::pulse::module::ModuleState {
+        self.modules
+            .get(name)
+            .cloned()
+            .unwrap_or_default()
+    }
+
+    /// 更新模块状态。
+    pub fn set_module_state(
+        &mut self,
+        name: &str,
+        state: crate::backend::pulse::module::ModuleState,
+    ) {
+        self.modules.insert(name.to_owned(), state);
+    }
+
+    /// 移除模块状态。
+    #[allow(dead_code)]
+    pub fn remove_module(&mut self, name: &str) {
+        self.modules.remove(name);
     }
 }
 

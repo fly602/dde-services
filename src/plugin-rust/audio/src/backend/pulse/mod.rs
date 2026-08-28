@@ -16,6 +16,7 @@
 //! - [`sink_input`] — 播放流状态、音量/静音/平衡操作
 
 pub mod card;
+pub mod module;
 pub mod sink;
 pub mod sink_input;
 pub mod source;
@@ -223,6 +224,61 @@ impl PulseManager {
                 let sink = info.default_sink_name.as_deref().unwrap_or("").to_owned();
                 let source = info.default_source_name.as_deref().unwrap_or("").to_owned();
                 let _ = tx.send((sink, source));
+            });
+            true
+        })
+    }
+
+    /// 加载模块，返回模块索引。
+    pub fn load_module(&self, name: &str, argument: &str) -> Result<u32, String> {
+        let name = name.to_owned();
+        let argument = argument.to_owned();
+        self.execute(|ctx, tx| {
+            let mut intro = ctx.introspect();
+            intro.load_module(&name, &argument, move |index| {
+                let _ = tx.send(index);
+            });
+            true
+        })
+    }
+
+    /// 卸载模块。
+    #[allow(dead_code)]
+    pub fn unload_module(&self, module_index: u32) -> Result<(), String> {
+        let result: bool = self.execute(|ctx, tx| {
+            let mut intro = ctx.introspect();
+            intro.unload_module(module_index, move |ok| {
+                let _ = tx.send(ok);
+            });
+            true
+        })?;
+        if result {
+            Ok(())
+        } else {
+            Err(format!("unload module {module_index} failed"))
+        }
+    }
+
+    /// 查询模块是否存在。
+    #[allow(dead_code)]
+    pub fn module_exists(&self, name: &str) -> Result<bool, String> {
+        use libpulse_binding::callbacks::ListResult;
+
+        let name = name.to_owned();
+        self.execute(|ctx, tx| {
+            let intro = ctx.introspect();
+            let mut found = false;
+            intro.get_module_info_list(move |res| {
+                match res {
+                    ListResult::Item(info) => {
+                        if info.name.as_deref() == Some(name.as_str()) {
+                            found = true;
+                        }
+                    }
+                    ListResult::End | ListResult::Error => {
+                        let _ = tx.send(found);
+                    }
+                }
             });
             true
         })

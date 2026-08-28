@@ -161,6 +161,9 @@ fn state_from_info(info: &libpulse_binding::context::introspect::CardInfo) -> cr
             bluetooth: false,
             description: p.description.as_deref().unwrap_or("").to_owned(),
             direction: if p.direction.contains(direction::FlagSet::OUTPUT) { 0 } else { 1 },
+            profiles: p.profiles.iter()
+                .filter_map(|prof| prof.name.as_deref().map(|n| n.to_owned()))
+                .collect(),
         })
         .collect();
 

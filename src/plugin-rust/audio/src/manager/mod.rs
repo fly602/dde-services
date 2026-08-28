@@ -23,6 +23,7 @@ use std::sync::Arc;
 
 use parking_lot::RwLock;
 
+use crate::backend::pulse::module::{MODULE_NULL_SINK, module_argument};
 use crate::backend::pulse::PulseManager;
 
 use device_manager::DeviceManager;
@@ -59,6 +60,8 @@ impl AudioManager {
         // 启动前先查询当前音频状态，填充 DeviceManager 并注册 D-Bus 子对象
         init_devices(&pulse, &device_manager, &connection)?;
 
+        // 确保 null-sink 模块存在（端口切换时作为临时 default）
+        let _ = load_module(&pulse, &device_manager, MODULE_NULL_SINK, None);
         let event_loop = event_loop::EventLoop::start(
             pulse.clone(),
             device_manager.clone(),
@@ -128,8 +131,109 @@ impl AudioManager {
     pub fn set_mono(&self, _enable: bool) -> Result<(), String> {
         Err("unimplemented".into())
     }
-    pub fn set_port(&self, _card_id: u32, _port_name: &str, _direction: u32) -> Result<(), String> {
-        Err("unimplemented".into())
+    /// 设置声卡端口。
+    ///
+    /// 流程：
+    /// 1. 若当前声卡的 sink/source 已存在该端口 → 直接设置端口
+    /// 2. 否则 select_profile 确定目标 profile
+    /// 3. 目标 profile 与当前不同 → 记录 pending 并切换 profile，
+    ///    等待设备重建后由 event_loop 完成端口设置
+    pub fn set_port(&self, card_id: u32, port_name: &str, direction: u32) -> Result<(), String> {
+        use crate::backend::pulse::card as pulse_card;
+        use crate::backend::pulse::sink as pulse_sink;
+        use crate::backend::pulse::source as pulse_source;
+
+        // 从 DeviceManager 读取声卡状态
+        let (active_profile, device_index, port_has_profile) = {
+            let dm = self.device_manager.read();
+            let card = dm.cards.get(&card_id).ok_or_else(|| {
+                format!("card {card_id} not found")
+            })?;
+
+            // 查找目标端口
+            let port = card.ports.iter().find(|p| p.name == port_name).ok_or_else(|| {
+                format!("port {port_name} not found on card {card_id}")
+            })?;
+
+            // 查找该 card 的 sink/source 索引
+            let device_index = if direction == 0 {
+                dm.sinks.values().find(|s| s.card == card_id).map(|s| s.index)
+            } else {
+                dm.sources.values().find(|s| s.card == card_id).map(|s| s.index)
+            };
+
+            (
+                card.active_profile.clone(),
+                device_index,
+                !port.profiles.is_empty(),
+            )
+        };
+
+        // 1. 设备已存在且包含目标端口 → 直接设置
+        if let Some(index) = device_index {
+            let has_port = {
+                let dm = self.device_manager.read();
+                if direction == 0 {
+                    dm.sinks
+                        .get(&index)
+                        .map(|s| s.ports.iter().any(|p| p.name == port_name))
+                        .unwrap_or(false)
+                } else {
+                    dm.sources
+                        .get(&index)
+                        .map(|s| s.ports.iter().any(|p| p.name == port_name))
+                        .unwrap_or(false)
+                }
+            };
+            if has_port {
+                eprintln!("[dde-audio] set_port: device {index} already has port {port_name}, set directly");
+                return if direction == 0 {
+                    pulse_sink::set_port(&self.pulse, index, port_name)
+                } else {
+                    pulse_source::set_port(&self.pulse, index, port_name)
+                };
+            }
+        }
+
+        // 2. 设备不存在该端口，需要切 profile
+        if !port_has_profile {
+            return Err(format!("port {port_name} has no profile on card {card_id}"));
+        }
+
+        // 确定目标 profile（从 DeviceManager 读端口 select_profile 结果）
+        let target_profile = {
+            let dm = self.device_manager.read();
+            let card = dm.cards.get(&card_id).ok_or_else(|| {
+                format!("card {card_id} not found")
+            })?;
+            let port = card.ports.iter().find(|p| p.name == port_name).ok_or_else(|| {
+                format!("port {port_name} not found on card {card_id}")
+            })?;
+            port.select_profile().map(|s| s.to_owned())
+        };
+
+        let target_profile = match target_profile {
+            Some(p) if !p.is_empty() => p,
+            _ => return Err(format!("no available profile for card {card_id} port {port_name}")),
+        };
+
+        if active_profile != target_profile {
+            // 3. profile 不同：记录 pending，切换 profile，等待设备重建
+            eprintln!(
+                "[dde-audio] set_port: switch card {card_id} profile {active_profile} -> {target_profile}"
+            );
+            self.device_manager
+                .write()
+                .set_pending_port(card_id, port_name.to_owned(), direction);
+            pulse_card::set_card_profile(&self.pulse, card_id, &target_profile)?;
+            Ok(())
+        } else {
+            // profile 相同但设备没有该端口（异常）：交给 pending 等设备重建
+            self.device_manager
+                .write()
+                .set_pending_port(card_id, port_name.to_owned(), direction);
+            Ok(())
+        }
     }
     pub fn set_port_enabled(
         &self,
@@ -215,4 +319,72 @@ fn init_devices(
 
     eprintln!("[dde-audio] device init done");
     Ok(())
+}
+
+/// 加载模块（统一接口）。
+///
+/// - 模块已存在 → 标记 Complete，不重复加载
+/// - 模块不存在 → 记录 Loading，按模块参数编排加载，等待设备创建事件完成
+///
+/// `channel` 为绑定设备名（单声道/降噪用），null-sink 传 None。
+fn load_module(
+    pulse: &Arc<PulseManager>,
+    device_manager: &Arc<RwLock<DeviceManager>>,
+    name: &str,
+    channel: Option<&str>,
+) -> Result<(), String> {
+    use crate::backend::pulse::module::ModuleState;
+
+    // 已加载完成则跳过
+    if let ModuleState::Complete { .. } = device_manager.read().module_state(name) {
+        return Ok(());
+    }
+
+    // 模块可能已被其他进程加载：查询索引并标记 Complete
+    if let Some(index) = find_module_index(pulse, name)? {
+        device_manager
+            .write()
+            .set_module_state(name, ModuleState::Complete { module_index: index });
+        return Ok(());
+    }
+
+    // 不存在：记录 Loading 并加载
+    let argument = module_argument(name, channel);
+    device_manager.write().set_module_state(
+        name,
+        ModuleState::Loading { loaded_at: std::time::Instant::now() },
+    );
+    let index = pulse.load_module(name, &argument)?;
+    device_manager
+        .write()
+        .set_module_state(name, ModuleState::Complete { module_index: index });
+    eprintln!("[dde-audio] loaded module {name} (index {index})");
+    Ok(())
+}
+
+/// 查询模块索引（存在则 Some，不存在则 None）。
+fn find_module_index(
+    pulse: &Arc<PulseManager>,
+    name: &str,
+) -> Result<Option<u32>, String> {
+    use libpulse_binding::callbacks::ListResult;
+
+    let name = name.to_owned();
+    pulse.execute(|ctx, tx| {
+        let intro = ctx.introspect();
+        let mut found: Option<u32> = None;
+        intro.get_module_info_list(move |res| {
+            match res {
+                ListResult::Item(info) => {
+                    if info.name.as_deref() == Some(name.as_str()) {
+                        found = Some(info.index);
+                    }
+                }
+                ListResult::End | ListResult::Error => {
+                    let _ = tx.send(found.take());
+                }
+            }
+        });
+        true
+    })
 }
