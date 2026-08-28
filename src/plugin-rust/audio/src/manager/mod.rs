@@ -61,7 +61,7 @@ impl AudioManager {
         init_devices(&pulse, &device_manager, &connection)?;
 
         // 确保 null-sink 模块存在（端口切换时作为临时 default）
-        let _ = load_module(&pulse, &device_manager, MODULE_NULL_SINK, None);
+        let _ = load_module(&pulse, &device_manager, MODULE_NULL_SINK, None, None);
         let event_loop = event_loop::EventLoop::start(
             pulse.clone(),
             device_manager.clone(),
@@ -139,7 +139,6 @@ impl AudioManager {
     /// 3. 目标 profile 与当前不同 → 记录 pending 并切换 profile，
     ///    等待设备重建后由 event_loop 完成端口设置
     pub fn set_port(&self, card_id: u32, port_name: &str, direction: u32) -> Result<(), String> {
-        use crate::backend::pulse::card as pulse_card;
         use crate::backend::pulse::sink as pulse_sink;
         use crate::backend::pulse::source as pulse_source;
 
@@ -218,22 +217,60 @@ impl AudioManager {
         };
 
         if active_profile != target_profile {
-            // 3. profile 不同：记录 pending，切换 profile，等待设备重建
+            // 3. profile 不同：切换 profile 并等待设备重建完成
             eprintln!(
                 "[dde-audio] set_port: switch card {card_id} profile {active_profile} -> {target_profile}"
             );
-            self.device_manager
-                .write()
-                .set_pending_port(card_id, port_name.to_owned(), direction);
-            pulse_card::set_card_profile(&self.pulse, card_id, &target_profile)?;
-            Ok(())
-        } else {
-            // profile 相同但设备没有该端口（异常）：交给 pending 等设备重建
-            self.device_manager
-                .write()
-                .set_pending_port(card_id, port_name.to_owned(), direction);
-            Ok(())
+            self.switch_card_profile(card_id, &target_profile)?;
         }
+
+        // 4. 设备已重建（或未切换），从 DeviceManager 查该 card 的 sink/source 并设置端口
+        let device_index = {
+            let dm = self.device_manager.read();
+            if direction == 0 {
+                dm.sinks.values().find(|s| s.card == card_id).map(|s| s.index)
+            } else {
+                dm.sources.values().find(|s| s.card == card_id).map(|s| s.index)
+            }
+        };
+
+        match device_index {
+            Some(index) if direction == 0 => pulse_sink::set_port(&self.pulse, index, port_name),
+            Some(index) => pulse_source::set_port(&self.pulse, index, port_name),
+            None => Err(format!("no device for card {card_id}")),
+        }
+    }
+
+    /// 切换声卡 profile 并等待设备重建完成。
+    ///
+    /// 置 pending profile → 提交切换 → 阻塞等待 event_loop 通知设备创建完成。
+    /// 超时返回错误。
+    fn switch_card_profile(&self, card_id: u32, profile: &str) -> Result<(), String> {
+        use crate::backend::pulse::card as pulse_card;
+        use device_manager::DIRECTION_SINK;
+        use device_manager::DIRECTION_SOURCE;
+        use device_manager::PendingProfile;
+
+        // 记录切换前该声卡的设备方向（重建后需全部齐全）
+        let required_directions = {
+            let dm = self.device_manager.read();
+            let mut dirs = 0u32;
+            if dm.sinks.values().any(|s| s.card == card_id) {
+                dirs |= DIRECTION_SINK;
+            }
+            if dm.sources.values().any(|s| s.card == card_id) {
+                dirs |= DIRECTION_SOURCE;
+            }
+            dirs
+        };
+
+        let wait = PendingProfile::new(required_directions);
+        self.device_manager
+            .write()
+            .set_pending_profile(card_id, wait.clone());
+
+        pulse_card::set_card_profile(&self.pulse, card_id, profile)?;
+        wait.wait(std::time::Duration::from_secs(5))
     }
     pub fn set_port_enabled(
         &self,
@@ -326,12 +363,14 @@ fn init_devices(
 /// - 模块已存在 → 标记 Complete，不重复加载
 /// - 模块不存在 → 记录 Loading，按模块参数编排加载，等待设备创建事件完成
 ///
-/// `channel` 为绑定设备名（单声道/降噪用），null-sink 传 None。
+/// `channel` 为主绑定设备名（单声道/降噪用），`extra_channel` 为附加绑定设备名（echo-cancel 的 sink_master）。
+/// null-sink 均传 None。
 fn load_module(
     pulse: &Arc<PulseManager>,
     device_manager: &Arc<RwLock<DeviceManager>>,
     name: &str,
     channel: Option<&str>,
+    extra_channel: Option<&str>,
 ) -> Result<(), String> {
     use crate::backend::pulse::module::ModuleState;
 
@@ -349,7 +388,7 @@ fn load_module(
     }
 
     // 不存在：记录 Loading 并加载
-    let argument = module_argument(name, channel);
+    let argument = module_argument(name, channel, extra_channel);
     device_manager.write().set_module_state(
         name,
         ModuleState::Loading { loaded_at: std::time::Instant::now() },

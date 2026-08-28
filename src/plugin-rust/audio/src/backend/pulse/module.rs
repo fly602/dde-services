@@ -61,22 +61,31 @@ impl ModuleState {
 
 /// 生成模块加载参数。
 ///
-/// `channel` 为绑定设备的名称（如 `sink_master`/`source_master`），
-/// 具体参数规则在模块内部编排：
+/// 具体参数规则在模块内部编排（以 PipeWire 模块 module.usage 为准）：
 /// - null-sink：无参数
-/// - remap-sink（单声道）：`sink_name=mono-sink channels=1 channel_map=mono sink_master=<channel>`
-/// - echo-cancel（降噪）：`source_master=<channel>`
-pub fn module_argument(name: &str, channel: Option<&str>) -> String {
+/// - remap-sink（单声道）：`sink_name=mono-sink channels=1 channel_map=mono master=<channel>`
+/// - echo-cancel（降噪）：同时绑定 `source_master=<channel>` 和 `sink_master=<extra_channel>`
+///
+/// `channel` 为主绑定设备名，`extra_channel` 为附加绑定设备名（仅 echo-cancel 用）。
+pub fn module_argument(
+    name: &str,
+    channel: Option<&str>,
+    extra_channel: Option<&str>,
+) -> String {
     match name {
         MODULE_NULL_SINK => String::new(),
         MODULE_REMAP_SINK => {
             format!(
-                "sink_name=mono-sink channels=1 channel_map=mono sink_master={}",
+                "sink_name=mono-sink channels=1 channel_map=mono master={}",
                 channel.unwrap_or("")
             )
         }
         MODULE_ECHO_CANCEL => {
-            format!("source_master={}", channel.unwrap_or(""))
+            format!(
+                "source_master={} sink_master={}",
+                channel.unwrap_or(""),
+                extra_channel.unwrap_or("")
+            )
         }
         _ => String::new(),
     }

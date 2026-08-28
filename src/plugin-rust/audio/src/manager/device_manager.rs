@@ -14,6 +14,7 @@
 //!   的具体逻辑（查 pulse 构造状态），delete 有回收也在子 device 处理
 
 use std::collections::HashMap;
+use std::sync::Arc;
 
 /// 音频端口信息。
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize, zbus::zvariant::Type)]
@@ -109,12 +110,65 @@ pub struct CardState {
     pub active_profile: String,
     pub ports: Vec<CardPortInfo>,
 }
+/// card 级别 profile 切换等待项。
+///
+/// set_profile 阻塞等待，event_loop 设备创建完成后通知。
+///
+/// `required_directions` 记录切换前该声卡存在的设备方向（bit0=输出，bit1=输入），
+/// 设备重建后所有方向齐全才认为完成。
+pub struct PendingProfile {
+    done: std::sync::Mutex<bool>,
+    cond: std::sync::Condvar,
+    /// 需要重建的方向掩码：bit0=输出(sink)，bit1=输入(source)。
+    required_directions: u32,
+}
 
-/// 待完成的端口设置（profile 切换完成后执行）。
-#[derive(Clone, Debug)]
-pub struct PendingPort {
-    pub port_name: String,
-    pub direction: u32,
+/// 方向掩码：输出。
+pub const DIRECTION_SINK: u32 = 1 << 0;
+/// 方向掩码：输入。
+pub const DIRECTION_SOURCE: u32 = 1 << 1;
+
+impl PendingProfile {
+    /// 创建等待项，指定需要重建的方向。
+    pub fn new(required_directions: u32) -> Arc<Self> {
+        Arc::new(Self {
+            done: std::sync::Mutex::new(false),
+            cond: std::sync::Condvar::new(),
+            required_directions,
+        })
+    }
+
+    /// 需要重建的方向掩码。
+    pub fn required_directions(&self) -> u32 {
+        self.required_directions
+    }
+
+    /// 阻塞等待完成，超时返回错误。
+    pub fn wait(&self, timeout: std::time::Duration) -> Result<(), String> {
+        let mut done = self
+            .done
+            .lock()
+            .map_err(|e| format!("mutex poisoned: {e}"))?;
+        while !*done {
+            let (guard, timeout_result) = self
+                .cond
+                .wait_timeout(done, timeout)
+                .map_err(|e| format!("mutex poisoned: {e}"))?;
+            done = guard;
+            if timeout_result.timed_out() {
+                return Err("profile switch timed out".into());
+            }
+        }
+        Ok(())
+    }
+
+    /// 通知完成（广播）。
+    pub fn signal(&self) {
+        if let Ok(mut done) = self.done.lock() {
+            *done = true;
+            self.cond.notify_all();
+        }
+    }
 }
 
 
@@ -198,9 +252,8 @@ pub struct DeviceManager {
     pub cards: HashMap<u32, CardState>,
     pub default_sink: Option<String>,
     pub default_source: Option<String>,
-    /// 待完成的端口设置：card_id → PendingPort。
-    /// profile 切换完成后，新设备创建时据此设置端口。
-    pub pending_ports: HashMap<u32, PendingPort>,
+    /// 正在切换 profile 的声卡：card_id → 等待项。
+    pub pending_profiles: HashMap<u32, Arc<PendingProfile>>,
     /// PulseAudio 模块状态：module 名 → 状态。
     pub modules: HashMap<String, crate::backend::pulse::module::ModuleState>,
 }
@@ -326,20 +379,6 @@ impl DeviceManager {
         serde_json::to_string(&list).unwrap_or_else(|_| "[]".into())
     }
 
-    // ===== Pending Port =====
-
-    /// 记录待完成的端口设置。
-    pub fn set_pending_port(&mut self, card_id: u32, port_name: String, direction: u32) {
-        self.pending_ports.insert(
-            card_id,
-            PendingPort { port_name, direction },
-        );
-    }
-
-    /// 获取并移除待完成的端口设置。
-    pub fn take_pending_port(&mut self, card_id: u32) -> Option<PendingPort> {
-        self.pending_ports.remove(&card_id)
-    }
 
     // ===== Module =====
 
@@ -364,6 +403,23 @@ impl DeviceManager {
     #[allow(dead_code)]
     pub fn remove_module(&mut self, name: &str) {
         self.modules.remove(name);
+    }
+
+    // ===== Pending Profile =====
+
+    /// 记录声卡 profile 切换等待项。
+    pub fn set_pending_profile(&mut self, card_id: u32, wait: Arc<PendingProfile>) {
+        self.pending_profiles.insert(card_id, wait);
+    }
+
+    /// 获取声卡 profile 切换等待项。
+    pub fn get_pending_profile(&self, card_id: u32) -> Option<Arc<PendingProfile>> {
+        self.pending_profiles.get(&card_id).cloned()
+    }
+
+    /// 移除声卡 profile 切换等待项。
+    pub fn take_pending_profile(&mut self, card_id: u32) -> Option<Arc<PendingProfile>> {
+        self.pending_profiles.remove(&card_id)
     }
 }
 
