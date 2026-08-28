@@ -38,6 +38,16 @@ impl CardPortInfo {
         self.profiles.first().map(|s| s.as_str())
     }
 }
+/// 声卡支持的 profile。
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize, zbus::zvariant::Type)]
+pub struct CardProfile {
+    pub name: String,
+    pub description: String,
+    /// 越高越适合作为默认 profile。
+    pub priority: u32,
+    /// 是否可用（unavailable 的 profile 无意义）。
+    pub available: bool,
+}
 
 /// 声卡（Card）状态。
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize, zbus::zvariant::Type)]
@@ -46,6 +56,8 @@ pub struct Card {
     pub name: String,
     pub active_profile: String,
     pub ports: Vec<CardPortInfo>,
+    /// 该声卡支持的所有 profile。
+    pub profiles: Vec<CardProfile>,
 }
 
 /// 方向掩码：输出。

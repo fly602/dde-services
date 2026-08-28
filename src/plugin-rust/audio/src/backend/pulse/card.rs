@@ -170,6 +170,17 @@ fn state_from_info(info: &libpulse_binding::context::introspect::CardInfo) -> cr
         })
         .collect();
 
+    let profiles = info
+        .profiles
+        .iter()
+        .map(|p| crate::manager::card::CardProfile {
+            name: p.name.as_deref().unwrap_or("").to_owned(),
+            description: p.description.as_deref().unwrap_or("").to_owned(),
+            priority: p.priority,
+            available: p.available,
+        })
+        .collect();
+
     crate::manager::card::Card {
         index: info.index,
         name: info.name.as_deref().unwrap_or("").to_owned(),
@@ -178,5 +189,6 @@ fn state_from_info(info: &libpulse_binding::context::introspect::CardInfo) -> cr
             .unwrap_or("")
             .to_owned(),
         ports,
+        profiles,
     }
 }
