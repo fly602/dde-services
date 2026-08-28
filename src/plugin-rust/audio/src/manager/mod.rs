@@ -247,10 +247,7 @@ impl AudioManager {
     /// 超时返回错误。
     fn switch_card_profile(&self, card_id: u32, profile: &str) -> Result<(), String> {
         use crate::backend::pulse::card as pulse_card;
-        use device_manager::DIRECTION_SINK;
-        use device_manager::DIRECTION_SOURCE;
-        use device_manager::PendingProfile;
-        use device_manager::PendingResult;
+        use card::{DIRECTION_SINK, DIRECTION_SOURCE, PendingProfile, PendingResult};
 
         // 记录切换前该声卡的设备方向（重建后需全部齐全）
         let required_directions = {
@@ -321,9 +318,9 @@ fn init_devices(
     connection: &zbus::blocking::Connection,
 ) -> Result<(), String> {
     use crate::backend::pulse::{card, sink, sink_input, source};
-    use crate::manager::sink::Sink;
-    use crate::manager::sink_input::SinkInput;
-    use crate::manager::source::Source;
+    use crate::manager::sink::SinkInterface;
+    use crate::manager::sink_input::SinkInputInterface;
+    use crate::manager::source::SourceInterface;
 
     // cards（无 D-Bus 对象，只填状态）
     for state in card::query_list(pulse)? {
@@ -334,10 +331,10 @@ fn init_devices(
     for state in sink::query_list(pulse)? {
         let index = state.index;
         device_manager.write().add_sink(index, state);
-        let obj = Sink::new_instance(index, pulse.clone(), device_manager.clone(), connection.clone());
+        let obj = SinkInterface::new_instance(index, pulse.clone(), device_manager.clone(), connection.clone());
         connection
             .object_server()
-            .at(Sink::path(index), obj)
+            .at(SinkInterface::path(index), obj)
             .map_err(|e| format!("register sink {index} failed: {e}"))?;
     }
 
@@ -345,10 +342,10 @@ fn init_devices(
     for state in source::query_list(pulse)? {
         let index = state.index;
         device_manager.write().add_source(index, state);
-        let obj = Source::new_instance(index, pulse.clone(), device_manager.clone(), connection.clone());
+        let obj = SourceInterface::new_instance(index, pulse.clone(), device_manager.clone(), connection.clone());
         connection
             .object_server()
-            .at(Source::path(index), obj)
+            .at(SourceInterface::path(index), obj)
             .map_err(|e| format!("register source {index} failed: {e}"))?;
     }
 
@@ -356,10 +353,10 @@ fn init_devices(
     for state in sink_input::query_list(pulse)? {
         let index = state.index;
         device_manager.write().add_sink_input(index, state);
-        let obj = SinkInput::new_instance(index, pulse.clone(), device_manager.clone(), connection.clone());
+        let obj = SinkInputInterface::new_instance(index, pulse.clone(), device_manager.clone(), connection.clone());
         connection
             .object_server()
-            .at(SinkInput::path(index), obj)
+            .at(SinkInputInterface::path(index), obj)
             .map_err(|e| format!("register sink input {index} failed: {e}"))?;
     }
 

@@ -4,9 +4,9 @@
 
 //! `org.deepin.dde.Audio2.SinkInput` 接口与设备生命周期。
 //!
-//! - `SinkInput::new` — 事件到达时创建 SinkInputState 写入 DeviceManager，并注册 D-Bus 对象
-//! - `SinkInput::update` — 事件到达时更新 SinkInputState
-//! - `SinkInput::delete` — 事件到达时回收资源并注销 D-Bus 对象
+//! - `SinkInputInterface::new` — 事件到达时创建 SinkInput 写入 DeviceManager，并注册 D-Bus 对象
+//! - `SinkInputInterface::update` — 事件到达时更新 SinkInput
+//! - `SinkInputInterface::delete` — 事件到达时回收资源并注销 D-Bus 对象
 //! - D-Bus 属性从 `DeviceManager` 读取，操作委托给 `backend::pulse::sink_input`
 
 use std::sync::Arc;
@@ -17,10 +17,23 @@ use zbus::interface;
 use crate::backend::pulse::PulseManager;
 use crate::backend::pulse::sink_input as pulse_sink_input;
 
-use super::device_manager::{DeviceManager, SinkInputState};
+/// SinkInput（播放流）状态。
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize, zbus::zvariant::Type)]
+pub struct SinkInput {
+    pub index: u32,
+    pub name: String,
+    pub mute: bool,
+    pub volume: f64,
+    pub balance: f64,
+    pub support_balance: bool,
+    pub fade: f64,
+    pub support_fade: bool,
+}
+
+use super::device_manager::DeviceManager;
 
 /// SinkInput D-Bus 对象。
-pub struct SinkInput {
+pub struct SinkInputInterface {
     index: u32,
     pulse: Arc<PulseManager>,
     device_manager: Arc<RwLock<DeviceManager>>,
@@ -28,7 +41,7 @@ pub struct SinkInput {
     connection: zbus::blocking::Connection,
 }
 
-impl SinkInput {
+impl SinkInputInterface {
     /// 构造 SinkInput D-Bus 对象实例（关联函数，由注册逻辑调用）。
     pub fn new_instance(
         index: u32,
@@ -44,14 +57,14 @@ impl SinkInput {
         format!("/org/deepin/dde/Audio2/SinkInput{index}")
     }
 
-    fn state(&self) -> Option<SinkInputState> {
+    fn state(&self) -> Option<SinkInput> {
         let reg = self.device_manager.read();
         reg.sink_inputs.get(&self.index).cloned()
     }
 }
 
 /// SinkInput 设备生命周期（事件处理入口，由 event_loop 调用）。
-impl SinkInput {
+impl SinkInputInterface {
     /// SinkInput 新增：查询状态写入 DeviceManager，注册 D-Bus 对象。
     pub fn new(
         pulse: &Arc<PulseManager>,
@@ -93,13 +106,13 @@ impl SinkInput {
         // TODO: 回收资源
         let _ = connection
             .object_server()
-            .remove::<SinkInput, _>(Self::path(index));
+            .remove::<SinkInputInterface, _>(Self::path(index));
         eprintln!("[dde-audio] sink input delete: {index}");
     }
 }
 
 #[interface(name = "org.deepin.dde.Audio2.SinkInput")]
-impl SinkInput {
+impl SinkInputInterface {
     // ========== 属性 ==========
 
     #[zbus(property)]

@@ -104,15 +104,15 @@ pub fn is_port_enabled(
     })
 }
 
-/// 查询单个声卡信息，构造 `CardState`。
+/// 查询单个声卡信息，构造 `Card`。
 pub fn query_info(
     pulse: &PulseManager,
     index: u32,
-) -> Result<crate::manager::device_manager::CardState, String> {
+) -> Result<crate::manager::card::Card, String> {
     use libpulse_binding::callbacks::ListResult;
 
     pulse.execute(|ctx, tx| {
-        let mut state: Option<crate::manager::device_manager::CardState> = None;
+        let mut state: Option<crate::manager::card::Card> = None;
         ctx.introspect().get_card_info_by_index(index, move |res| {
             match res {
                 ListResult::Item(info) => {
@@ -128,12 +128,12 @@ pub fn query_info(
     .ok_or_else(|| format!("card {index} not found"))
 }
 
-/// 查询所有声卡信息，返回 `Vec<CardState>`。
-pub fn query_list(pulse: &PulseManager) -> Result<Vec<crate::manager::device_manager::CardState>, String> {
+/// 查询所有声卡信息，返回 `Vec<Card>`。
+pub fn query_list(pulse: &PulseManager) -> Result<Vec<crate::manager::card::Card>, String> {
     use libpulse_binding::callbacks::ListResult;
 
     pulse.execute(|ctx, tx| {
-        let mut list: Vec<crate::manager::device_manager::CardState> = Vec::new();
+        let mut list: Vec<crate::manager::card::Card> = Vec::new();
         ctx.introspect().get_card_info_list(move |res| {
             match res {
                 ListResult::Item(info) => {
@@ -151,14 +151,14 @@ pub fn query_list(pulse: &PulseManager) -> Result<Vec<crate::manager::device_man
     })
 }
 
-fn state_from_info(info: &libpulse_binding::context::introspect::CardInfo) -> crate::manager::device_manager::CardState {
+fn state_from_info(info: &libpulse_binding::context::introspect::CardInfo) -> crate::manager::card::Card {
     use libpulse_binding::def::PortAvailable;
     use libpulse_binding::direction;
 
     let ports = info
         .ports
         .iter()
-        .map(|p| crate::manager::device_manager::CardPortInfo {
+        .map(|p| crate::manager::card::CardPortInfo {
             name: p.name.as_deref().unwrap_or("").to_owned(),
             enabled: p.available != PortAvailable::No,
             bluetooth: false,
@@ -170,7 +170,7 @@ fn state_from_info(info: &libpulse_binding::context::introspect::CardInfo) -> cr
         })
         .collect();
 
-    crate::manager::device_manager::CardState {
+    crate::manager::card::Card {
         index: info.index,
         name: info.name.as_deref().unwrap_or("").to_owned(),
         active_profile: info.active_profile.as_ref()

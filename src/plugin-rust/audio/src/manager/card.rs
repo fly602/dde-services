@@ -17,6 +17,132 @@ use crate::backend::pulse::PulseManager;
 
 use super::device_manager::DeviceManager;
 
+/// 声卡端口信息。
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize, zbus::zvariant::Type)]
+pub struct CardPortInfo {
+    pub name: String,
+    pub enabled: bool,
+    pub bluetooth: bool,
+    pub description: String,
+    pub direction: u32,
+    /// 该端口关联的可用 profile 名称。
+    pub profiles: Vec<String>,
+}
+
+impl CardPortInfo {
+    /// 选择该端口最合适的 profile。
+    ///
+    /// 当前返回第一个可用的 profile 名称。
+    /// TODO: 按 profile 优先级/蓝牙模式选择最优。
+    pub fn select_profile(&self) -> Option<&str> {
+        self.profiles.first().map(|s| s.as_str())
+    }
+}
+
+/// 声卡（Card）状态。
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize, zbus::zvariant::Type)]
+pub struct Card {
+    pub index: u32,
+    pub name: String,
+    pub active_profile: String,
+    pub ports: Vec<CardPortInfo>,
+}
+
+/// 方向掩码：输出。
+pub const DIRECTION_SINK: u32 = 1 << 0;
+/// 方向掩码：输入。
+pub const DIRECTION_SOURCE: u32 = 1 << 1;
+
+/// card 级别 profile 切换等待项。
+///
+/// set_profile 阻塞等待，event_loop 设备创建完成后通知。
+/// pending 操作的最终结果。
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum PendingResult {
+    /// 完成（设备重建齐全）。
+    Complete,
+    /// 声卡被移除，操作终止。
+    CardRemoved,
+    /// 失败（当前无生产者，为三态协议预留）。
+    #[allow(dead_code)]
+    Failed(String),
+}
+
+/// card 级别 profile 切换等待项。
+///
+/// set_profile 阻塞等待，event_loop 设备创建完成后通知。
+///
+/// `required_directions` 记录切换前该声卡存在的设备方向（bit0=输出，bit1=输入），
+/// 设备重建后所有方向齐全才认为完成。
+///
+/// 结果是广播的（`notify_all`），多个等待者可同时收到 complete/card removed。
+pub struct PendingProfile {
+    result: std::sync::Mutex<Option<PendingResult>>,
+    cond: std::sync::Condvar,
+    /// 需要重建的方向掩码：bit0=输出(sink)，bit1=输入(source)。
+    required_directions: u32,
+}
+
+impl PendingProfile {
+    /// 创建等待项，指定需要重建的方向。
+    pub fn new(required_directions: u32) -> Arc<Self> {
+        Arc::new(Self {
+            result: std::sync::Mutex::new(None),
+            cond: std::sync::Condvar::new(),
+            required_directions,
+        })
+    }
+
+    /// 需要重建的方向掩码。
+    pub fn required_directions(&self) -> u32 {
+        self.required_directions
+    }
+
+    /// 阻塞等待结果，超时返回错误。
+    pub fn wait(&self, timeout: std::time::Duration) -> Result<PendingResult, String> {
+        let mut result = self
+            .result
+            .lock()
+            .map_err(|e| format!("mutex poisoned: {e}"))?;
+        while result.is_none() {
+            let (guard, timeout_result) = self
+                .cond
+                .wait_timeout(result, timeout)
+                .map_err(|e| format!("mutex poisoned: {e}"))?;
+            result = guard;
+            if timeout_result.timed_out() {
+                return Err("profile switch timed out".into());
+            }
+        }
+        Ok(result.clone().unwrap())
+    }
+
+    /// 广播完成。
+    pub fn signal_complete(&self) {
+        self.signal(PendingResult::Complete);
+    }
+
+    /// 广播声卡被移除。
+    pub fn signal_removed(&self) {
+        self.signal(PendingResult::CardRemoved);
+    }
+
+    /// 广播失败。
+    #[allow(dead_code)]
+    pub fn signal_failed(&self, error: String) {
+        self.signal(PendingResult::Failed(error));
+    }
+
+    fn signal(&self, result: PendingResult) {
+        if let Ok(mut guard) = self.result.lock() {
+            if guard.is_none() {
+                *guard = Some(result);
+                self.cond.notify_all();
+            }
+        }
+    }
+}
+
 /// Card 新增：查询状态写入 DeviceManager。
 pub fn new(
     pulse: &Arc<PulseManager>,
@@ -64,10 +190,7 @@ pub fn on_device_created(
     device_manager: &Arc<RwLock<DeviceManager>>,
     device_index: u32,
     is_sink: bool,
-) {
-    use super::device_manager::DIRECTION_SINK;
-    use super::device_manager::DIRECTION_SOURCE;
-
+    ) {
     let card_id = {
         let dm = device_manager.read();
         if is_sink {

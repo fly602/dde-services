@@ -18,9 +18,9 @@ use crate::backend::pulse::{PulseEvent, PulseManager};
 
 use super::card;
 use super::device_manager::DeviceManager;
-use super::sink::Sink;
-use super::sink_input::SinkInput;
-use super::source::Source;
+use super::sink::SinkInterface;
+use super::sink_input::SinkInputInterface;
+use super::source::SourceInterface;
 use super::DBUS_PATH;
 
 /// 发送 org.freedesktop.DBus.Properties.PropertiesChanged 信号。
@@ -105,13 +105,13 @@ impl EventLoop {
             for event in events {
                 match event {
                     PulseEvent::SinkAdded { index } => {
-                        let _ = Sink::new(&pulse, &device_manager, &connection, index);
+                        let _ = SinkInterface::new(&pulse, &device_manager, &connection, index);
                         try_complete_pending_profile(&device_manager, index, true);
                         emit_audio_list_changed(&connection, &["Sinks"]);
                     }
                     PulseEvent::SinkChanged { index } => {
-                        let _ = Sink::update(&pulse, &device_manager, index);
-                        let path = Sink::path(index);
+                        let _ = SinkInterface::update(&pulse, &device_manager, index);
+                        let path = SinkInterface::path(index);
                         emit_device_changed(
                             &connection,
                             &path,
@@ -120,17 +120,17 @@ impl EventLoop {
                         );
                     }
                     PulseEvent::SinkRemoved { index } => {
-                        Sink::delete(&device_manager, &connection, index);
+                        SinkInterface::delete(&device_manager, &connection, index);
                         emit_audio_list_changed(&connection, &["Sinks"]);
                     }
                     PulseEvent::SourceAdded { index } => {
-                        let _ = Source::new(&pulse, &device_manager, &connection, index);
+                        let _ = SourceInterface::new(&pulse, &device_manager, &connection, index);
                         try_complete_pending_profile(&device_manager, index, false);
                         emit_audio_list_changed(&connection, &["Sources"]);
                     }
                     PulseEvent::SourceChanged { index } => {
-                        let _ = Source::update(&pulse, &device_manager, index);
-                        let path = Source::path(index);
+                        let _ = SourceInterface::update(&pulse, &device_manager, index);
+                        let path = SourceInterface::path(index);
                         emit_device_changed(
                             &connection,
                             &path,
@@ -139,16 +139,16 @@ impl EventLoop {
                         );
                     }
                     PulseEvent::SourceRemoved { index } => {
-                        Source::delete(&device_manager, &connection, index);
+                        SourceInterface::delete(&device_manager, &connection, index);
                         emit_audio_list_changed(&connection, &["Sources"]);
                     }
                     PulseEvent::SinkInputAdded { index } => {
-                        let _ = SinkInput::new(&pulse, &device_manager, &connection, index);
+                        let _ = SinkInputInterface::new(&pulse, &device_manager, &connection, index);
                         emit_audio_list_changed(&connection, &["SinkInputs"]);
                     }
                     PulseEvent::SinkInputChanged { index } => {
-                        let _ = SinkInput::update(&pulse, &device_manager, index);
-                        let path = SinkInput::path(index);
+                        let _ = SinkInputInterface::update(&pulse, &device_manager, index);
+                        let path = SinkInputInterface::path(index);
                         emit_device_changed(
                             &connection,
                             &path,
@@ -157,7 +157,7 @@ impl EventLoop {
                         );
                     }
                     PulseEvent::SinkInputRemoved { index } => {
-                        SinkInput::delete(&device_manager, &connection, index);
+                        SinkInputInterface::delete(&device_manager, &connection, index);
                         emit_audio_list_changed(&connection, &["SinkInputs"]);
                     }
                     PulseEvent::CardAdded { index } => {

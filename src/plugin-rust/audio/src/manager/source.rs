@@ -4,9 +4,9 @@
 
 //! `org.deepin.dde.Audio2.Source` 接口与设备生命周期。
 //!
-//! - `Source::new` — 事件到达时创建 SourceState 写入 DeviceManager，并注册 D-Bus 对象
-//! - `Source::update` — 事件到达时更新 SourceState
-//! - `Source::delete` — 事件到达时回收资源并注销 D-Bus 对象
+//! - `SourceInterface::new` — 事件到达时创建 Source 写入 DeviceManager，并注册 D-Bus 对象
+//! - `SourceInterface::update` — 事件到达时更新 Source
+//! - `SourceInterface::delete` — 事件到达时回收资源并注销 D-Bus 对象
 //! - D-Bus 属性从 `DeviceManager` 读取，操作委托给 `backend::pulse::source`
 
 use std::sync::Arc;
@@ -17,17 +17,35 @@ use zbus::interface;
 use crate::backend::pulse::PulseManager;
 use crate::backend::pulse::source as pulse_source;
 
-use super::device_manager::{DeviceManager, SourceState};
+/// Source（输入设备）状态。
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize, zbus::zvariant::Type)]
+pub struct Source {
+    pub index: u32,
+    pub name: String,
+    pub description: String,
+    pub base_volume: f64,
+    pub mute: bool,
+    pub volume: f64,
+    pub balance: f64,
+    pub support_balance: bool,
+    pub fade: f64,
+    pub support_fade: bool,
+    pub ports: Vec<super::sink::Port>,
+    pub active_port: super::sink::Port,
+    pub card: u32,
+}
+
+use super::device_manager::DeviceManager;
 
 /// Source D-Bus 对象。
-pub struct Source {
+pub struct SourceInterface {
     index: u32,
     pulse: Arc<PulseManager>,
     device_manager: Arc<RwLock<DeviceManager>>,
     connection: zbus::blocking::Connection,
 }
 
-impl Source {
+impl SourceInterface {
     /// 构造 Source D-Bus 对象实例（关联函数，由注册逻辑调用）。
     pub fn new_instance(
         index: u32,
@@ -43,14 +61,14 @@ impl Source {
         format!("/org/deepin/dde/Audio2/Source{index}")
     }
 
-    fn state(&self) -> Option<SourceState> {
+    fn state(&self) -> Option<Source> {
         let reg = self.device_manager.read();
         reg.sources.get(&self.index).cloned()
     }
 }
 
 /// Source 设备生命周期（事件处理入口，由 event_loop 调用）。
-impl Source {
+impl SourceInterface {
     /// Source 新增：查询状态写入 DeviceManager，注册 D-Bus 对象。
     pub fn new(
         pulse: &Arc<PulseManager>,
@@ -92,13 +110,13 @@ impl Source {
         // TODO: 回收资源
         let _ = connection
             .object_server()
-            .remove::<Source, _>(Self::path(index));
+            .remove::<SourceInterface, _>(Self::path(index));
         eprintln!("[dde-audio] source delete: {index}");
     }
 }
 
 #[interface(name = "org.deepin.dde.Audio2.Source")]
-impl Source {
+impl SourceInterface {
     // ========== 属性 ==========
 
     #[zbus(property)]

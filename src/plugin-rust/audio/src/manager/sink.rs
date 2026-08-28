@@ -4,9 +4,9 @@
 
 //! `org.deepin.dde.Audio2.Sink` 接口与设备生命周期。
 //!
-//! - `Sink::new` — 事件到达时创建 SinkState 写入 DeviceManager，并注册 D-Bus 对象
-//! - `Sink::update` — 事件到达时更新 SinkState
-//! - `Sink::delete` — 事件到达时回收资源并注销 D-Bus 对象
+//! - `SinkInterface::new` — 事件到达时创建 Sink 写入 DeviceManager，并注册 D-Bus 对象
+//! - `SinkInterface::update` — 事件到达时更新 Sink
+//! - `SinkInterface::delete` — 事件到达时回收资源并注销 D-Bus 对象
 //! - D-Bus 属性从 `DeviceManager` 读取，操作委托给 `backend::pulse::sink`
 
 use std::sync::Arc;
@@ -17,20 +17,46 @@ use zbus::interface;
 use crate::backend::pulse::PulseManager;
 use crate::backend::pulse::sink as pulse_sink;
 
-use super::device_manager::{DeviceManager, SinkState};
+/// 音频端口信息。
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize, zbus::zvariant::Type)]
+pub struct Port {
+    pub name: String,
+    pub description: String,
+    pub direction: u32,
+}
+
+/// Sink（输出设备）状态。
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize, zbus::zvariant::Type)]
+pub struct Sink {
+    pub index: u32,
+    pub name: String,
+    pub description: String,
+    pub base_volume: f64,
+    pub mute: bool,
+    pub volume: f64,
+    pub balance: f64,
+    pub support_balance: bool,
+    pub fade: f64,
+    pub support_fade: bool,
+    pub ports: Vec<Port>,
+    pub active_port: Port,
+    pub card: u32,
+}
+
+use super::device_manager::DeviceManager;
 
 /// Sink D-Bus 对象。
 ///
-/// 事件到达时由 `Sink::new` 创建并注册到 zbus ObjectServer。
+/// 事件到达时由 `SinkInterface::new` 创建并注册到 zbus ObjectServer。
 /// 属性通过 DeviceManager 读取，不保存可变状态。
-pub struct Sink {
+pub struct SinkInterface {
     index: u32,
     pulse: Arc<PulseManager>,
     device_manager: Arc<RwLock<DeviceManager>>,
     connection: zbus::blocking::Connection,
 }
 
-impl Sink {
+impl SinkInterface {
     pub fn new_instance(
         index: u32,
         pulse: Arc<PulseManager>,
@@ -45,14 +71,14 @@ impl Sink {
         format!("/org/deepin/dde/Audio2/Sink{index}")
     }
 
-    fn state(&self) -> Option<SinkState> {
+    fn state(&self) -> Option<Sink> {
         let reg = self.device_manager.read();
         reg.sinks.get(&self.index).cloned()
     }
 }
 
 /// Sink 设备生命周期（事件处理入口，由 event_loop 调用）。
-impl Sink {
+impl SinkInterface {
     /// Sink 新增：查询状态写入 DeviceManager，注册 D-Bus 对象。
     ///
     /// 返回 `(index, 是否成功)`。注册失败不阻断状态更新。
@@ -97,13 +123,13 @@ impl Sink {
         // TODO: 回收资源（如 meter stream）
         let _ = connection
             .object_server()
-            .remove::<Sink, _>(Self::path(index));
+            .remove::<SinkInterface, _>(Self::path(index));
         eprintln!("[dde-audio] sink delete: {index}");
     }
 }
 
 #[interface(name = "org.deepin.dde.Audio2.Sink")]
-impl Sink {
+impl SinkInterface {
     // ========== 属性 ==========
 
     #[zbus(property)]

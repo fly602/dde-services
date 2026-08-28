@@ -183,15 +183,15 @@ pub fn get_meter(_pulse: &PulseManager, _index: u32) -> Result<u32, String> {
 
 // ========== 查询 ==========
 
-/// 查询单个 Sink 信息，构造 `SinkState`。
+/// 查询单个 Sink 信息，构造 `Sink`。
 pub fn query_info(
     pulse: &PulseManager,
     index: u32,
-) -> Result<crate::manager::device_manager::SinkState, String> {
+) -> Result<crate::manager::sink::Sink, String> {
     use libpulse_binding::callbacks::ListResult;
 
     pulse.execute(|ctx, tx| {
-        let mut state: Option<crate::manager::device_manager::SinkState> = None;
+        let mut state: Option<crate::manager::sink::Sink> = None;
         ctx.introspect().get_sink_info_by_index(index, move |res| {
             match res {
                 ListResult::Item(info) => {
@@ -207,12 +207,12 @@ pub fn query_info(
     .ok_or_else(|| format!("sink {index} not found"))
 }
 
-/// 查询所有 Sink 信息，返回 `Vec<SinkState>`。
-pub fn query_list(pulse: &PulseManager) -> Result<Vec<crate::manager::device_manager::SinkState>, String> {
+/// 查询所有 Sink 信息，返回 `Vec<Sink>`。
+pub fn query_list(pulse: &PulseManager) -> Result<Vec<crate::manager::sink::Sink>, String> {
     use libpulse_binding::callbacks::ListResult;
 
     pulse.execute(|ctx, tx| {
-        let mut list: Vec<crate::manager::device_manager::SinkState> = Vec::new();
+        let mut list: Vec<crate::manager::sink::Sink> = Vec::new();
         ctx.introspect().get_sink_info_list(move |res| {
             match res {
                 ListResult::Item(info) => {
@@ -230,22 +230,22 @@ pub fn query_list(pulse: &PulseManager) -> Result<Vec<crate::manager::device_man
     })
 }
 
-fn state_from_info(info: &libpulse_binding::context::introspect::SinkInfo) -> crate::manager::device_manager::SinkState {
+fn state_from_info(info: &libpulse_binding::context::introspect::SinkInfo) -> crate::manager::sink::Sink {
     let ports = info
         .ports
         .iter()
-        .map(|p| crate::manager::device_manager::Port {
+        .map(|p| crate::manager::sink::Port {
             name: p.name.as_deref().unwrap_or("").to_owned(),
             description: p.description.as_deref().unwrap_or("").to_owned(),
             direction: 0, // sink 方向固定为输出
         })
         .collect();
 
-    let active_port = info.active_port.as_ref().map(|p| crate::manager::device_manager::Port {
+    let active_port = info.active_port.as_ref().map(|p| crate::manager::sink::Port {
         name: p.name.as_deref().unwrap_or("").to_owned(),
         description: p.description.as_deref().unwrap_or("").to_owned(),
         direction: 0,
-    }).unwrap_or_else(|| crate::manager::device_manager::Port {
+    }).unwrap_or_else(|| crate::manager::sink::Port {
         name: String::new(),
         description: String::new(),
         direction: 0,
@@ -254,7 +254,7 @@ fn state_from_info(info: &libpulse_binding::context::introspect::SinkInfo) -> cr
     let vol = info.volume.avg();
     let base = info.base_volume;
 
-    crate::manager::device_manager::SinkState {
+    crate::manager::sink::Sink {
         index: info.index,
         name: info.name.as_deref().unwrap_or("").to_owned(),
         description: info.description.as_deref().unwrap_or("").to_owned(),

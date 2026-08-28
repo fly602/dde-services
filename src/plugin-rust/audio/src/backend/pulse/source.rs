@@ -168,15 +168,15 @@ pub fn get_meter(_pulse: &PulseManager, _index: u32) -> Result<u32, String> {
     Err("unimplemented".into())
 }
 
-/// 查询单个 Source 信息，构造 `SourceState`。
+/// 查询单个 Source 信息，构造 `Source`。
 pub fn query_info(
     pulse: &PulseManager,
     index: u32,
-) -> Result<crate::manager::device_manager::SourceState, String> {
+) -> Result<crate::manager::source::Source, String> {
     use libpulse_binding::callbacks::ListResult;
 
     pulse.execute(|ctx, tx| {
-        let mut state: Option<crate::manager::device_manager::SourceState> = None;
+        let mut state: Option<crate::manager::source::Source> = None;
         ctx.introspect().get_source_info_by_index(index, move |res| {
             match res {
                 ListResult::Item(info) => {
@@ -192,12 +192,12 @@ pub fn query_info(
     .ok_or_else(|| format!("source {index} not found"))
 }
 
-/// 查询所有 Source 信息，返回 `Vec<SourceState>`。
-pub fn query_list(pulse: &PulseManager) -> Result<Vec<crate::manager::device_manager::SourceState>, String> {
+/// 查询所有 Source 信息，返回 `Vec<Source>`。
+pub fn query_list(pulse: &PulseManager) -> Result<Vec<crate::manager::source::Source>, String> {
     use libpulse_binding::callbacks::ListResult;
 
     pulse.execute(|ctx, tx| {
-        let mut list: Vec<crate::manager::device_manager::SourceState> = Vec::new();
+        let mut list: Vec<crate::manager::source::Source> = Vec::new();
         ctx.introspect().get_source_info_list(move |res| {
             match res {
                 ListResult::Item(info) => {
@@ -215,24 +215,24 @@ pub fn query_list(pulse: &PulseManager) -> Result<Vec<crate::manager::device_man
     })
 }
 
-fn state_from_info(info: &libpulse_binding::context::introspect::SourceInfo) -> crate::manager::device_manager::SourceState {
+fn state_from_info(info: &libpulse_binding::context::introspect::SourceInfo) -> crate::manager::source::Source {
     use libpulse_binding::volume::Volume;
 
     let ports = info
         .ports
         .iter()
-        .map(|p| crate::manager::device_manager::Port {
+        .map(|p| crate::manager::sink::Port {
             name: p.name.as_deref().unwrap_or("").to_owned(),
             description: p.description.as_deref().unwrap_or("").to_owned(),
             direction: 1, // source 方向固定为输入
         })
         .collect();
 
-    let active_port = info.active_port.as_ref().map(|p| crate::manager::device_manager::Port {
+    let active_port = info.active_port.as_ref().map(|p| crate::manager::sink::Port {
         name: p.name.as_deref().unwrap_or("").to_owned(),
         description: p.description.as_deref().unwrap_or("").to_owned(),
         direction: 1,
-    }).unwrap_or_else(|| crate::manager::device_manager::Port {
+    }).unwrap_or_else(|| crate::manager::sink::Port {
         name: String::new(),
         description: String::new(),
         direction: 1,
@@ -241,7 +241,7 @@ fn state_from_info(info: &libpulse_binding::context::introspect::SourceInfo) -> 
     let vol = info.volume.avg();
     let base = info.base_volume;
 
-    crate::manager::device_manager::SourceState {
+    crate::manager::source::Source {
         index: info.index,
         name: info.name.as_deref().unwrap_or("").to_owned(),
         description: info.description.as_deref().unwrap_or("").to_owned(),

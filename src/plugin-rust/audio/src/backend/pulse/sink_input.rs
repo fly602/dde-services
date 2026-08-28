@@ -146,15 +146,15 @@ pub fn set_fade(pulse: &PulseManager, index: u32, value: f64) -> Result<(), Stri
     Ok(())
 }
 
-/// 查询单个 SinkInput 信息，构造 `SinkInputState`。
+/// 查询单个 SinkInput 信息，构造 `SinkInput`。
 pub fn query_info(
     pulse: &PulseManager,
     index: u32,
-) -> Result<crate::manager::device_manager::SinkInputState, String> {
+) -> Result<crate::manager::sink_input::SinkInput, String> {
     use libpulse_binding::callbacks::ListResult;
 
     pulse.execute(|ctx, tx| {
-        let mut state: Option<crate::manager::device_manager::SinkInputState> = None;
+        let mut state: Option<crate::manager::sink_input::SinkInput> = None;
         ctx.introspect().get_sink_input_info(index, move |res| {
             match res {
                 ListResult::Item(info) => {
@@ -170,12 +170,12 @@ pub fn query_info(
     .ok_or_else(|| format!("sink input {index} not found"))
 }
 
-/// 查询所有 SinkInput 信息，返回 `Vec<SinkInputState>`。
-pub fn query_list(pulse: &PulseManager) -> Result<Vec<crate::manager::device_manager::SinkInputState>, String> {
+/// 查询所有 SinkInput 信息，返回 `Vec<SinkInput>`。
+pub fn query_list(pulse: &PulseManager) -> Result<Vec<crate::manager::sink_input::SinkInput>, String> {
     use libpulse_binding::callbacks::ListResult;
 
     pulse.execute(|ctx, tx| {
-        let mut list: Vec<crate::manager::device_manager::SinkInputState> = Vec::new();
+        let mut list: Vec<crate::manager::sink_input::SinkInput> = Vec::new();
         ctx.introspect().get_sink_input_info_list(move |res| {
             match res {
                 ListResult::Item(info) => {
@@ -193,12 +193,12 @@ pub fn query_list(pulse: &PulseManager) -> Result<Vec<crate::manager::device_man
     })
 }
 
-fn state_from_info(info: &libpulse_binding::context::introspect::SinkInputInfo) -> crate::manager::device_manager::SinkInputState {
+fn state_from_info(info: &libpulse_binding::context::introspect::SinkInputInfo) -> crate::manager::sink_input::SinkInput {
     use libpulse_binding::volume::Volume;
 
     let vol = info.volume.avg();
 
-    crate::manager::device_manager::SinkInputState {
+    crate::manager::sink_input::SinkInput {
         index: info.index,
         name: info.name.as_deref().unwrap_or("").to_owned(),
         mute: info.mute,
