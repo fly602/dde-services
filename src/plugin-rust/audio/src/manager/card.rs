@@ -62,9 +62,9 @@ pub struct Card {
     pub profiles: Vec<Profile>,
     /// 生命周期状态。
     pub status: CardStatus,
-    /// 进行中的 profile 切换操作（同步手柄）。
+    /// 进行中的状态变更（同步手柄）。
     #[serde(skip)]
-    pub operation: Option<Arc<ProfileSwitch>>,
+    pub operation: Option<Arc<StatusChange>>,
 }
 
 impl From<crate::backend::pulse::card::BackendCard> for Card {
@@ -114,9 +114,9 @@ pub enum CardStatus {
     Removing,
 }
 
-/// 一次 profile 切换操作的最终结果。
+/// 一次状态变更（如 profile 切换）的最终结果。
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub enum SwitchResult {
+pub enum ChangeResult {
     /// 完成（设备重建齐全）。
     Complete,
     /// 声卡被移除，操作终止。
@@ -126,24 +126,25 @@ pub enum SwitchResult {
     Failed(String),
 }
 
-/// 一次 profile 切换操作的同步手柄。
+/// 一次状态变更的同步手柄。
 ///
-/// set_profile 阻塞等待，event_loop 设备创建完成后通知。
+/// 变更发起方（如 set_profile）阻塞等待，event_loop 检测到
+/// 变更完成（设备重建齐全）后通知。
 ///
-/// `required_directions` 记录切换前该声卡存在的设备方向（bit0=输出，bit1=输入），
+/// `required_directions` 记录变更前该声卡存在的设备方向（bit0=输出，bit1=输入），
 /// 设备重建后所有方向齐全才认为完成。
 ///
-/// 结果是广播的（`notify_all`），多个等待者可同时收到 complete/card removed。
-pub struct ProfileSwitch {
-    result: std::sync::Mutex<Option<SwitchResult>>,
+/// 结果是广播的（`notify_all`），多个等待者可同时收到完成/移除/失败。
+pub struct StatusChange {
+    result: std::sync::Mutex<Option<ChangeResult>>,
     cond: std::sync::Condvar,
     /// 需要重建的方向掩码：bit0=输出(sink)，bit1=输入(source)。
     required_directions: u32,
 }
 
-impl std::fmt::Debug for ProfileSwitch {
+impl std::fmt::Debug for StatusChange {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("ProfileSwitch")
+        f.debug_struct("StatusChange")
             .field("required_directions", &self.required_directions)
             .field(
                 "result",
@@ -153,7 +154,7 @@ impl std::fmt::Debug for ProfileSwitch {
     }
 }
 
-impl ProfileSwitch {
+impl StatusChange {
     /// 创建等待项，指定需要重建的方向。
     pub fn new(required_directions: u32) -> Arc<Self> {
         Arc::new(Self {
@@ -169,7 +170,7 @@ impl ProfileSwitch {
     }
 
     /// 阻塞等待结果，超时返回错误。
-    pub fn wait(&self, timeout: std::time::Duration) -> Result<SwitchResult, String> {
+    pub fn wait(&self, timeout: std::time::Duration) -> Result<ChangeResult, String> {
         let mut result = self
             .result
             .lock()
@@ -189,21 +190,21 @@ impl ProfileSwitch {
 
     /// 广播完成。
     pub fn signal_complete(&self) {
-        self.signal(SwitchResult::Complete);
+        self.signal(ChangeResult::Complete);
     }
 
     /// 广播声卡被移除。
     pub fn signal_removed(&self) {
-        self.signal(SwitchResult::CardRemoved);
+        self.signal(ChangeResult::CardRemoved);
     }
 
     /// 广播失败。
     #[allow(dead_code)]
     pub fn signal_failed(&self, error: String) {
-        self.signal(SwitchResult::Failed(error));
+        self.signal(ChangeResult::Failed(error));
     }
 
-    fn signal(&self, result: SwitchResult) {
+    fn signal(&self, result: ChangeResult) {
         if let Ok(mut guard) = self.result.lock() {
             if guard.is_none() {
                 *guard = Some(result);

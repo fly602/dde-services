@@ -247,7 +247,7 @@ impl AudioManager {
     /// 超时返回错误。
     fn switch_card_profile(&self, card_id: u32, profile: &str) -> Result<(), String> {
         use crate::backend::pulse::card as pulse_card;
-        use card::{CardStatus, DIRECTION_SINK, DIRECTION_SOURCE, ProfileSwitch, SwitchResult};
+        use card::{CardStatus, DIRECTION_SINK, DIRECTION_SOURCE, StatusChange, ChangeResult};
 
         // 记录切换前该声卡的设备方向（重建后需全部齐全）
         let required_directions = {
@@ -262,7 +262,7 @@ impl AudioManager {
             dirs
         };
 
-        let op = ProfileSwitch::new(required_directions);
+        let op = StatusChange::new(required_directions);
         {
             let mut dm = self.device_manager.write();
             if let Some(card) = dm.cards.get_mut(&card_id) {
@@ -276,9 +276,9 @@ impl AudioManager {
         // 阻塞等待 event_loop 通知：完成/声卡移除/失败/超时。
         let result = op.wait(std::time::Duration::from_secs(5))?;
         match result {
-            SwitchResult::Complete => Ok(()),
-            SwitchResult::CardRemoved => Err(format!("card {card_id} removed during profile switch")),
-            SwitchResult::Failed(e) => Err(format!("profile switch failed: {e}")),
+            ChangeResult::Complete => Ok(()),
+            ChangeResult::CardRemoved => Err(format!("card {card_id} removed during profile switch")),
+            ChangeResult::Failed(e) => Err(format!("profile switch failed: {e}")),
         }
     }
     /// 设置端口启用/禁用。
