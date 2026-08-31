@@ -73,6 +73,8 @@ pub struct DeviceManager {
     pub output_priority: PortPriority,
     /// 输入端口优先级策略。
     pub input_priority: PortPriority,
+    /// 用户禁用的端口：(card_id, port_name)。
+    pub disabled_ports: std::collections::HashSet<(u32, String)>,
 }
 
 impl Default for DeviceManager {
@@ -88,6 +90,7 @@ impl Default for DeviceManager {
             meters: HashMap::new(),
             output_priority: PortPriority::new(Direction::Output),
             input_priority: PortPriority::new(Direction::Input),
+            disabled_ports: std::collections::HashSet::new(),
         }
     }
 }
@@ -166,10 +169,25 @@ impl DeviceManager {
         removed
     }
 
+    /// 用户禁用端口（enabled=false），供优先级优选排除。
+    pub fn set_port_enabled(&mut self, card_id: u32, port_name: &str, enabled: bool) {
+        if enabled {
+            self.disabled_ports.remove(&(card_id, port_name.to_owned()));
+        } else {
+            self.disabled_ports.insert((card_id, port_name.to_owned()));
+        }
+        self.refresh_priority();
+    }
+
+    /// 查询端口是否被用户启用（不在禁用集合）。
+    pub fn is_port_enabled(&self, card_id: u32, port_name: &str) -> bool {
+        !self.disabled_ports.contains(&(card_id, port_name.to_owned()))
+    }
+
     /// 用当前声卡列表刷新输出/输入端口优先级策略。
     pub fn refresh_priority(&mut self) {
-        self.output_priority.refresh(&self.cards);
-        self.input_priority.refresh(&self.cards);
+        self.output_priority.refresh(&self.cards, &self.disabled_ports);
+        self.input_priority.refresh(&self.cards, &self.disabled_ports);
     }
 
 #[allow(dead_code)]

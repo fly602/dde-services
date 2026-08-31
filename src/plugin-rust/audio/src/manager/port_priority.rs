@@ -13,7 +13,7 @@
 //! 来源：dde-daemon/audio1 的 PriorityPolicy，但简化为单一 Vec 实时排序，
 //! 消除 Go 的双结构与 Position 指针。
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use crate::manager::card::Card;
 use crate::manager::device_type::{self, PortType};
@@ -83,13 +83,18 @@ impl PortPriority {
     }
 
     /// 用卡片列表刷新候选端口。
-    pub fn refresh(&mut self, cards: &HashMap<u32, Card>) {
+    ///
+    /// `disabled` 为用户禁用的 (card_id, port_name) 集合，排除在候选外。
+    pub fn refresh(&mut self, cards: &HashMap<u32, Card>, disabled: &HashSet<(u32, String)>) {
         self.ports = cards
             .values()
             .flat_map(|card| {
                 card.ports.iter().filter_map(|p| {
                     let d: Direction = p.direction.into();
-                    if d != self.direction || !p.enabled {
+                    if d != self.direction
+                        || !p.enabled
+                        || disabled.contains(&(card.index, p.name.clone()))
+                    {
                         return None;
                     }
                     Some(PrioritizedPort {
@@ -256,7 +261,7 @@ mod tests {
         cards.insert(2, mk_card(2, "usb.2", vec![
             ("usb-output".into(), 0, 100, true),
         ]));
-        pm.refresh(&cards);
+        pm.refresh(&cards, &HashSet::new());
         let p = pm.prefer_port(always_enabled).unwrap();
         // Builtin(扬声器) 应优先于 Usb，尽管 Usb priority 高
         assert_eq!(p.port_name, "analog-output-speaker");
@@ -270,7 +275,7 @@ mod tests {
             ("input-mic".into(), 1, 0, true),
             ("linein".into(), 1, 10, true),
         ]));
-        pm.refresh(&cards);
+        pm.refresh(&cards, &HashSet::new());
         // 默认 Builtin 优先
         assert_eq!(pm.prefer_port(always_enabled).unwrap().port_name, "input-mic");
         // 用户选 linein
@@ -286,7 +291,7 @@ mod tests {
             ("analog-output-a".into(), 0, 5, true),
             ("analog-output-b".into(), 0, 50, true),
         ]));
-        pm.refresh(&cards);
+        pm.refresh(&cards, &HashSet::new());
         // 同类型 Builtin：priority 大者优先
         assert_eq!(pm.prefer_port(always_enabled).unwrap().port_name, "analog-output-b");
     }
@@ -299,7 +304,7 @@ mod tests {
             ("hdmi-output".into(), 0, 10, true),
             ("analog-output".into(), 0, 5, false),  // 禁用
         ]));
-        pm.refresh(&cards);
+        pm.refresh(&cards, &HashSet::new());
         assert_eq!(pm.prefer_port(always_enabled).unwrap().port_name, "hdmi-output");
     }
 

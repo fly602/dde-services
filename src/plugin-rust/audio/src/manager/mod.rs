@@ -335,21 +335,25 @@ impl AudioManager {
     }
     /// 设置端口启用/禁用。
     ///
-    /// TODO: 端口禁用涉及端口优选逻辑，待实现端口优选时一起处理。
-    /// 当前仅返回未实现。
+    /// 记录到 DeviceManager 的用户禁用集合，并刷新端口优先级
+    /// （禁用端口从优选候选中排除）。
     pub fn set_port_enabled(
         &self,
-        _card_id: u32,
-        _port_name: &str,
-        _enabled: bool,
+        card_id: u32,
+        port_name: &str,
+        enabled: bool,
     ) -> Result<(), String> {
-        Err("unimplemented".into())
+        self.device_manager
+            .write()
+            .set_port_enabled(card_id, port_name, enabled);
+        eprintln!(
+            "[dde-audio] set port enabled: card {card_id} port {port_name} enabled={enabled}"
+        );
+        Ok(())
     }
-    /// 查询端口是否启用。
-    ///
-    /// TODO: 待端口优选实现后接上 availability 查询。
-    pub fn is_port_enabled(&self, _card_id: u32, _port_name: &str) -> Result<bool, String> {
-        Err("unimplemented".into())
+    /// 查询端口是否启用（未被用户禁用）。
+    pub fn is_port_enabled(&self, card_id: u32, port_name: &str) -> Result<bool, String> {
+        Ok(self.device_manager.read().is_port_enabled(card_id, port_name))
     }
     pub fn set_current_audio_server(&self, _server_name: &str) -> Result<(), String> {
         Err("unimplemented".into())
