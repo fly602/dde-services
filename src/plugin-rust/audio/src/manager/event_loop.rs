@@ -84,8 +84,12 @@ fn try_complete_pending_profile(
     device_manager: &Arc<RwLock<DeviceManager>>,
     device_index: u32,
     is_sink: bool,
+    on_card_event: Option<&Arc<dyn Fn() + Send + Sync>>,
 ) {
     card::on_device_created(device_manager, device_index, is_sink);
+    if let Some(cb) = on_card_event {
+        cb();
+    }
 }
 
 /// 事件循环管理器。
@@ -100,13 +104,14 @@ impl EventLoop {
         device_manager: Arc<RwLock<DeviceManager>>,
         connection: zbus::blocking::Connection,
         events: crossbeam_channel::Receiver<PulseEvent>,
+        on_card_event: Option<Arc<dyn Fn() + Send + Sync>>,
     ) -> Self {
         let handle = thread::spawn(move || {
             for event in events {
                 match event {
                     PulseEvent::SinkAdded { index } => {
                         let _ = SinkInterface::new(&pulse, &device_manager, &connection, index);
-                        try_complete_pending_profile(&device_manager, index, true);
+                        try_complete_pending_profile(&device_manager, index, true, on_card_event.as_ref());
                         emit_audio_list_changed(&connection, &["Sinks"]);
                     }
                     PulseEvent::SinkChanged { index } => {
@@ -125,7 +130,7 @@ impl EventLoop {
                     }
                     PulseEvent::SourceAdded { index } => {
                         let _ = SourceInterface::new(&pulse, &device_manager, &connection, index);
-                        try_complete_pending_profile(&device_manager, index, false);
+                        try_complete_pending_profile(&device_manager, index, false, on_card_event.as_ref());
                         emit_audio_list_changed(&connection, &["Sources"]);
                     }
                     PulseEvent::SourceChanged { index } => {
@@ -162,14 +167,23 @@ impl EventLoop {
                     }
                     PulseEvent::CardAdded { index } => {
                         let _ = card::new(&pulse, &device_manager, index);
+                        if let Some(cb) = &on_card_event {
+                            cb();
+                        }
                         emit_audio_list_changed(&connection, &["Cards", "CardsWithoutUnavailable"]);
                     }
                     PulseEvent::CardChanged { index } => {
                         let _ = card::update(&pulse, &device_manager, index);
+                        if let Some(cb) = &on_card_event {
+                            cb();
+                        }
                         emit_audio_list_changed(&connection, &["Cards", "CardsWithoutUnavailable"]);
                     }
                     PulseEvent::CardRemoved { index } => {
                         card::delete(&device_manager, index);
+                        if let Some(cb) = &on_card_event {
+                            cb();
+                        }
                         emit_audio_list_changed(&connection, &["Cards", "CardsWithoutUnavailable"]);
                     }
                     PulseEvent::DefaultSinkChanged { name } => {

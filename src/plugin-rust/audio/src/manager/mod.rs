@@ -54,10 +54,16 @@ pub struct AudioManager {
     event_loop: event_loop::EventLoop,
     /// 端口设置/优先级切换协调器。
     coordinator: coordinator::SwitchCoordinator,
+    /// 事件循环回调用的自身弱引用槽（lib.rs 在 Arc 创建后写入）。
+    #[allow(dead_code)]
+    manager_slot: std::sync::Arc<parking_lot::RwLock<Option<std::sync::Weak<AudioManager>>>>,
 }
 
 impl AudioManager {
-    pub fn new(connection: zbus::blocking::Connection) -> Result<Self, String> {
+    pub fn new(
+        connection: zbus::blocking::Connection,
+        manager_slot: std::sync::Arc<parking_lot::RwLock<Option<std::sync::Weak<AudioManager>>>>,
+    ) -> Result<Self, String> {
         let (pulse, events) = PulseManager::new()?;
         let pulse = Arc::new(pulse);
         let device_manager = Arc::new(RwLock::new(DeviceManager::default()));
@@ -67,11 +73,23 @@ impl AudioManager {
 
         // 确保 null-sink 模块存在（端口切换时作为临时 default）
         let _ = load_module(&pulse, &device_manager, MODULE_NULL_SINK, None, None);
+
+        // 声卡事件回调：升级自身弱引用，触发自动端口切换
+        let slot = manager_slot.clone();
+        let on_card_event: Option<Arc<dyn Fn() + Send + Sync>> = Some(Arc::new(move || {
+            if let Some(weak) = slot.read().as_ref() {
+                if let Some(mgr) = weak.upgrade() {
+                    let _ = mgr.auto_switch_ports();
+                }
+            }
+        }));
+
         let event_loop = event_loop::EventLoop::start(
             pulse.clone(),
             device_manager.clone(),
             connection.clone(),
             events,
+            on_card_event,
         );
 
         Ok(Self {
@@ -80,6 +98,7 @@ impl AudioManager {
             connection,
             event_loop,
             coordinator: coordinator::SwitchCoordinator::new(),
+            manager_slot,
         })
     }
 
@@ -139,12 +158,44 @@ impl AudioManager {
     }
     /// 设置声卡端口。
     ///
+    /// 手动设置声卡端口（用户触发）。
     pub fn set_port(&self, card_id: u32, port_name: &str, direction: u32) -> Result<(), String> {
+        self.set_port_inner(card_id, port_name, direction, false)
+    }
+
+    /// 设置声卡端口（手动/自动共享核心）。
+    ///
+    /// `auto=true` 为优先级自动切换调用（不记录 user_prefer）；
+    /// `auto=false` 为手动调用（记录用户偏好 R6）。
+    fn set_port_inner(
+        &self,
+        card_id: u32,
+        port_name: &str,
+        direction: u32,
+        auto: bool,
+    ) -> Result<(), String> {
         use crate::backend::pulse::sink as pulse_sink;
         use crate::backend::pulse::source as pulse_source;
         use card::CardStatus;
         use card::ChangeResult;
         use coordinator::SwitchKind;
+
+        // 手动：记录用户偏好（R6）
+        if !auto {
+            if let Some(card) = self.device_manager.read().cards.get(&card_id) {
+                if direction == 0 {
+                    self.device_manager
+                        .write()
+                        .output_priority
+                        .set_user_prefer(&card.name, port_name);
+                } else {
+                    self.device_manager
+                        .write()
+                        .input_priority
+                        .set_user_prefer(&card.name, port_name);
+                }
+            }
+        }
 
         // 获取全局切换互斥（R3/R4：端口设置与优先级自动切换互斥）
         let _guard = self.coordinator.acquire(SwitchKind::ManualSetPort)?;
@@ -277,6 +328,53 @@ impl AudioManager {
             Some(index) => pulse_source::set_port(&self.pulse, index, port_name),
             None => Err(format!("no device for card {card_id}")),
         }
+    }
+
+    /// 自动切换端口：按优先级选输出/输入优选端口并设置。
+    ///
+    /// 触发点：声卡增删改后、声卡 Pending→Ready 完成时（由 event_loop 回调触发）。
+    /// 通过协调器 PriorityAuto 与手动 set_port 互斥（R3/R4）。
+    pub fn auto_switch_ports(&self) -> Result<(), String> {
+        // 手动端口设置进行中则跳过（R3）：set_port_inner 内统一互斥，
+        // 此处直接尝试，若被手动占用则 acquire 失败、跳过本次自动切换。
+
+        // 输出：选优选端口对应的 sink 并设置
+        let out_target = {
+            let dm = self.device_manager.read();
+            dm.output_priority.prefer_port(|key| {
+                // 该卡有输出方向的 sink（活动通道）才可选
+                let card_id = dm.cards.iter()
+                    .find(|(_, c)| c.name == key.card_name)
+                    .map(|(i, _)| *i);
+                match card_id {
+                    Some(cid) => dm.sinks.values().any(|s| s.card == cid),
+                    None => false,
+                }
+            }).map(|p| (p.card_id, p.port_name.clone(), 0u32))
+        };
+        if let Some((card_id, port_name, dir)) = out_target {
+            // 调用共享 set_port（auto=true 不记录 user_prefer）
+            // 若手动操作占用互斥锁或设备不存在，跳过本次自动切换
+            let _ = self.set_port_inner(card_id, &port_name, dir, true);
+        }
+
+        // 输入：同理选 source
+        let in_target = {
+            let dm = self.device_manager.read();
+            dm.input_priority.prefer_port(|key| {
+                let card_id = dm.cards.iter()
+                    .find(|(_, c)| c.name == key.card_name)
+                    .map(|(i, _)| *i);
+                match card_id {
+                    Some(cid) => dm.sources.values().any(|s| s.card == cid),
+                    None => false,
+                }
+            }).map(|p| (p.card_id, p.port_name.clone(), 1u32))
+        };
+        if let Some((card_id, port_name, dir)) = in_target {
+            let _ = self.set_port_inner(card_id, &port_name, dir, true);
+        }
+        Ok(())
     }
 
     /// 检查声卡仍存在（未被移除）。声卡移除是可靠取消信号源（R2）。

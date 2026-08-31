@@ -65,11 +65,16 @@ fn start_plugin(context: &PluginContextV1) -> Result<PluginState, i32> {
             -1
         })?;
 
-    let manager = AudioManager::new(connection.clone()).map_err(|e| {
+    // 声卡事件回调的弱引用槽：EventLoop 事件触发 auto_switch_ports
+    let manager_slot: std::sync::Arc<parking_lot::RwLock<Option<std::sync::Weak<AudioManager>>>> =
+        std::sync::Arc::new(parking_lot::RwLock::new(None));
+
+    let manager = AudioManager::new(connection.clone(), manager_slot.clone()).map_err(|e| {
         eprintln!("[dde-audio] failed to create audio manager: {e}");
         -1
     })?;
     let manager = std::sync::Arc::new(manager);
+    *manager_slot.write() = Some(std::sync::Arc::downgrade(&manager));
 
     connection
         .object_server()
