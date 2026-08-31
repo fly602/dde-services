@@ -84,19 +84,19 @@ fn try_complete_pending_profile(
     device_manager: &Arc<RwLock<DeviceManager>>,
     device_index: u32,
     is_sink: bool,
-    on_card_event: Option<&Arc<dyn Fn() + Send + Sync>>,
+    switch_tx: &crossbeam_channel::Sender<()>,
 ) {
     card::on_device_created(device_manager, device_index, is_sink);
-    if let Some(cb) = on_card_event {
-        cb();
-    }
+    // 异步触发自动切换（worker 线程执行），见 `start` 注释
+    let _ = switch_tx.try_send(());
 }
 
 /// 事件循环管理器。
 pub struct EventLoop {
     handle: Option<thread::JoinHandle<()>>,
+    /// 自动切换 worker 线程（消费卡事件触发的异步切换请求）。
+    worker_handle: Option<thread::JoinHandle<()>>,
 }
-
 impl EventLoop {
     /// 启动事件消费线程。
     pub fn start(
@@ -106,12 +106,40 @@ impl EventLoop {
         events: crossbeam_channel::Receiver<PulseEvent>,
         on_card_event: Option<Arc<dyn Fn() + Send + Sync>>,
     ) -> Self {
+        // 自动切换 worker 线程：
+        // EventLoop 线程只做轻量状态更新，真正的 auto_switch_ports
+        // （可能 op.wait 数秒）由独立线程执行。否则 EventLoop 阻塞在
+        // op.wait 上，等不到所需的设备重建事件（self-deadlock），
+        // 并阻塞全部后续 Pulse 事件消费。
+        //
+        // 触发采用「debounce 合并」：首个触发唤醒 worker，随后在
+        // DEBOUNCE 窗口内吸收所有新触发；窗口期无新触发才执行一次
+        // auto_switch。设备反复插拔产生的事件 burst 被合并为单次执行，
+        // 且以窗口结束时的最新设备状态为准，避免冗余/无意义的反复切换。
+        const DEBOUNCE: std::time::Duration = std::time::Duration::from_millis(200);
+        let (switch_tx, switch_rx) = crossbeam_channel::bounded(1);
+        let worker_cb = on_card_event.clone();
+        let worker_handle = thread::spawn(move || {
+            loop {
+                // 等待首个触发；channel 关闭则退出
+                if switch_rx.recv().is_err() {
+                    break;
+                }
+                // 吸收窗口期内的后续触发
+                while switch_rx.recv_timeout(DEBOUNCE).is_ok() {}
+                // 窗口期无新触发，执行一次自动切换（用最新设备状态）
+                if let Some(cb) = &worker_cb {
+                    cb();
+                }
+            }
+        });
+
         let handle = thread::spawn(move || {
             for event in events {
                 match event {
                     PulseEvent::SinkAdded { index } => {
                         let _ = SinkInterface::new(&pulse, &device_manager, &connection, index);
-                        try_complete_pending_profile(&device_manager, index, true, on_card_event.as_ref());
+                        try_complete_pending_profile(&device_manager, index, true, &switch_tx);
                         emit_audio_list_changed(&connection, &["Sinks"]);
                     }
                     PulseEvent::SinkChanged { index } => {
@@ -130,7 +158,7 @@ impl EventLoop {
                     }
                     PulseEvent::SourceAdded { index } => {
                         let _ = SourceInterface::new(&pulse, &device_manager, &connection, index);
-                        try_complete_pending_profile(&device_manager, index, false, on_card_event.as_ref());
+                        try_complete_pending_profile(&device_manager, index, false, &switch_tx);
                         emit_audio_list_changed(&connection, &["Sources"]);
                     }
                     PulseEvent::SourceChanged { index } => {
@@ -167,23 +195,18 @@ impl EventLoop {
                     }
                     PulseEvent::CardAdded { index } => {
                         let _ = card::new(&pulse, &device_manager, index);
-                        if let Some(cb) = &on_card_event {
-                            cb();
-                        }
+                        // 异步触发自动切换（worker 线程执行，不阻塞事件消费）
+                        let _ = switch_tx.try_send(());
                         emit_audio_list_changed(&connection, &["Cards", "CardsWithoutUnavailable"]);
                     }
                     PulseEvent::CardChanged { index } => {
                         let _ = card::update(&pulse, &device_manager, index);
-                        if let Some(cb) = &on_card_event {
-                            cb();
-                        }
+                        let _ = switch_tx.try_send(());
                         emit_audio_list_changed(&connection, &["Cards", "CardsWithoutUnavailable"]);
                     }
                     PulseEvent::CardRemoved { index } => {
                         card::delete(&device_manager, index);
-                        if let Some(cb) = &on_card_event {
-                            cb();
-                        }
+                        let _ = switch_tx.try_send(());
                         emit_audio_list_changed(&connection, &["Cards", "CardsWithoutUnavailable"]);
                     }
                     PulseEvent::DefaultSinkChanged { name } => {
@@ -215,6 +238,7 @@ impl EventLoop {
 
         Self {
             handle: Some(handle),
+            worker_handle: Some(worker_handle),
         }
     }
 }
@@ -223,6 +247,9 @@ impl Drop for EventLoop {
     fn drop(&mut self) {
         if let Some(handle) = self.handle.take() {
             let _ = handle.join();
+        }
+        if let Some(wh) = self.worker_handle.take() {
+            let _ = wh.join();
         }
     }
 }

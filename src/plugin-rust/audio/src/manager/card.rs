@@ -193,6 +193,44 @@ impl StatusChange {
         Ok(result.clone().unwrap())
     }
 
+    /// 阻塞等待结果；期间轮询外部 `cancel` 标志，置位则返回 `Cancelled`。
+    ///
+    /// 供 coordinator 抢占终止使用：新操作到来置 cancel，本等待点
+    /// 在 ~100ms 内醒来返回 Cancelled，让出锁。
+    pub fn wait_cancellable(
+        &self,
+        cancel: &std::sync::atomic::AtomicBool,
+        timeout: std::time::Duration,
+    ) -> Result<ChangeResult, String> {
+        use std::sync::atomic::Ordering;
+        use std::time::{Duration as StdDur, Instant};
+
+        let poll = StdDur::from_millis(100);
+        let deadline = Instant::now() + timeout;
+        let mut result = self
+            .result
+            .lock()
+            .map_err(|e| format!("mutex poisoned: {e}"))?;
+        loop {
+            if let Some(r) = result.as_ref() {
+                return Ok(r.clone());
+            }
+            if cancel.load(Ordering::SeqCst) {
+                return Ok(ChangeResult::Cancelled);
+            }
+            let now = Instant::now();
+            if now >= deadline {
+                return Err("profile switch timed out".into());
+            }
+            let wait = poll.min(deadline - now);
+            let (g, _) = self
+                .cond
+                .wait_timeout(result, wait)
+                .map_err(|e| format!("mutex poisoned: {e}"))?;
+            result = g;
+        }
+    }
+
     /// 广播完成。
     pub fn signal_complete(&self) {
         self.signal(ChangeResult::Complete);
@@ -238,12 +276,25 @@ pub fn new(
 }
 
 /// Card 更新：查询最新状态写入 DeviceManager。
+///
+/// 若声卡正处于 profile 切换（Pending）中，保留其 `status`/`change`，
+/// 否则 CardChanged 事件会把 Pending 重置为 Ready、丢弃等待句柄，
+/// 导致后续设备创建完成判定（`on_device_created`）漏判而超时。
 pub fn update(
     pulse: &Arc<PulseManager>,
     device_manager: &Arc<RwLock<DeviceManager>>,
     index: u32,
 ) -> Result<(), String> {
-    let state: Card = pulse_card::query_info(pulse, index)?.into();
+    let mut state: Card = pulse_card::query_info(pulse, index)?.into();
+
+    // 正在切换中：保留 Pending 与 change 句柄
+    if let Some(existing) = device_manager.read().cards.get(&index) {
+        if existing.status == CardStatus::Pending {
+            state.status = CardStatus::Pending;
+            state.change = existing.change.clone();
+        }
+    }
+
     device_manager.write().update_card(index, state);
     eprintln!("[dde-audio] card update: {index}");
     Ok(())
@@ -318,5 +369,228 @@ pub fn on_device_created(
         if let Some(card) = device_manager.write().cards.get_mut(&card_id) {
             card.status = CardStatus::Ready;
         }
+    }
+}
+
+/// 检查声卡仍存在（未被移除）。声卡移除是可靠取消信号源（R2）。
+///
+/// 在 set_port 的各操作阶段（直接设端口/切profile/最终设端口）前调用，
+/// 确保任何阶段的卡移除都能终止操作。
+pub fn ensure_card_alive(
+    device_manager: &Arc<RwLock<DeviceManager>>,
+    card_id: u32,
+) -> Result<(), String> {
+    if !device_manager.read().cards.contains_key(&card_id) {
+        return Err(format!("card {card_id} removed"));
+    }
+    Ok(())
+}
+
+/// 切换声卡 profile 并等待设备重建完成。
+///
+/// 置 Pending + change → 提交切换 → 阻塞等待 event_loop 通知设备创建完成。
+/// `cancel` 为该操作取消令牌，被更高优先级任务取代时提前结束。
+pub fn switch_card_profile(
+    pulse: &Arc<PulseManager>,
+    device_manager: &Arc<RwLock<DeviceManager>>,
+    card_id: u32,
+    profile: &str,
+    cancel: &std::sync::atomic::AtomicBool,
+) -> Result<(), String> {
+    use CardStatus;
+    use ChangeResult;
+    use StatusChange;
+    use DIRECTION_SINK;
+    use DIRECTION_SOURCE;
+
+    // 记录切换前该声卡的设备方向（重建后需全部齐全）
+    let required_directions = {
+        let dm = device_manager.read();
+        let mut dirs = 0u32;
+        if dm.sinks.values().any(|s| s.card == card_id) {
+            dirs |= DIRECTION_SINK;
+        }
+        if dm.sources.values().any(|s| s.card == card_id) {
+            dirs |= DIRECTION_SOURCE;
+        }
+        dirs
+    };
+
+    let op = StatusChange::new(required_directions);
+    {
+        let mut dm = device_manager.write();
+        if let Some(card) = dm.cards.get_mut(&card_id) {
+            card.status = CardStatus::Pending;
+            card.change = Some(op.clone());
+        }
+    }
+
+    pulse_card::set_card_profile(pulse, card_id, profile)?;
+
+    // 阻塞等待 event_loop 通知：完成/声卡移除/取消/失败/超时。
+    // 用 wait_cancellable：被更高优先级任务取代时提前醒来让出锁。
+    let result = op.wait_cancellable(cancel, std::time::Duration::from_secs(5))?;
+    // 等待期间卡可能被移除（R2），wait 返回后再确认
+    ensure_card_alive(device_manager, card_id)?;
+    match result {
+        ChangeResult::Complete => Ok(()),
+        ChangeResult::Removed => Err(format!("card {card_id} removed during profile switch")),
+        ChangeResult::Cancelled => Err(format!("profile switch cancelled for card {card_id}")),
+        ChangeResult::Failed(e) => Err(format!("profile switch failed: {e}")),
+    }
+}
+
+/// 设置声卡端口。
+///
+/// 由 AudioManager 的 executor 分发调用（串行，无并发）。`cancel` 为该
+/// 任务取消令牌，被更高优先级任务取代时提前结束。
+///
+/// 流程：R1 Pending 等待 → 查目标端口/设备 → 设备已有端口则直接设置 →
+/// 否则切换 profile 并等待重建 → 设置端口。
+pub fn set_port(
+    pulse: &Arc<PulseManager>,
+    device_manager: &Arc<RwLock<DeviceManager>>,
+    card_id: u32,
+    port_name: &str,
+    direction: u32,
+    cancel: &std::sync::atomic::AtomicBool,
+) -> Result<(), String> {
+    use crate::backend::pulse::sink as pulse_sink;
+    use crate::backend::pulse::source as pulse_source;
+    use CardStatus;
+    use ChangeResult;
+
+    // R1：声卡 Pending 时等待就绪；被更高优先级任务取代(cancel)则终止。
+    loop {
+        let status = {
+            let dm = device_manager.read();
+            dm.cards.get(&card_id).map(|c| c.status)
+        };
+        match status {
+            Some(CardStatus::Ready) => break,
+            Some(CardStatus::Pending) => {
+                let change = {
+                    let dm = device_manager.read();
+                    dm.cards.get(&card_id).and_then(|c| c.change.clone())
+                };
+                match change {
+                    Some(ch) => {
+                        let r = ch.wait_cancellable(cancel, std::time::Duration::from_secs(5));
+                        match r? {
+                            ChangeResult::Complete => continue,
+                            ChangeResult::Cancelled => {
+                                return Err("port operation cancelled by a newer request".into())
+                            }
+                            ChangeResult::Removed => {
+                                return Err(format!("card {card_id} removed while waiting for ready"))
+                            }
+                            ChangeResult::Failed(e) => return Err(e),
+                        }
+                    }
+                    None => return Err(format!("card {card_id} pending but no change handle")),
+                }
+            }
+            Some(CardStatus::Removing) | None => {
+                return Err(format!("card {card_id} not available"));
+            }
+        }
+    }
+
+    // 从 DeviceManager 读取声卡状态
+    let (active_profile, device_index, port_has_profile) = {
+        let dm = device_manager.read();
+        let card = dm.cards.get(&card_id).ok_or_else(|| {
+            format!("card {card_id} not found")
+        })?;
+
+        // 查找目标端口
+        let port = card.ports.iter().find(|p| p.name == port_name).ok_or_else(|| {
+            format!("port {port_name} not found on card {card_id}")
+        })?;
+
+        // 查找该 card 的 sink/source 索引
+        let device_index = if direction == 0 {
+            dm.sinks.values().find(|s| s.card == card_id).map(|s| s.index)
+        } else {
+            dm.sources.values().find(|s| s.card == card_id).map(|s| s.index)
+        };
+
+        (
+            card.active_profile.clone(),
+            device_index,
+            !port.profiles.is_empty(),
+        )
+    };
+
+    // 1. 设备已存在且包含目标端口 → 直接设置
+    if let Some(index) = device_index {
+        let has_port = {
+            let dm = device_manager.read();
+            if direction == 0 {
+                dm.sinks
+                    .get(&index)
+                    .map(|s| s.ports.iter().any(|p| p.name == port_name))
+                    .unwrap_or(false)
+            } else {
+                dm.sources
+                    .get(&index)
+                    .map(|s| s.ports.iter().any(|p| p.name == port_name))
+                    .unwrap_or(false)
+            }
+        };
+        if has_port {
+            eprintln!("[dde-audio] set_port: device {index} already has port {port_name}, set directly");
+            return if direction == 0 {
+                pulse_sink::set_port(pulse, index, port_name)
+            } else {
+                pulse_source::set_port(pulse, index, port_name)
+            };
+        }
+    }
+
+    // 2. 设备不存在该端口，需要切 profile
+    if !port_has_profile {
+        return Err(format!("port {port_name} has no profile on card {card_id}"));
+    }
+
+    // 确定目标 profile（从 DeviceManager 读端口 select_profile 结果）
+    let target_profile = {
+        let dm = device_manager.read();
+        let card = dm.cards.get(&card_id).ok_or_else(|| {
+            format!("card {card_id} not found")
+        })?;
+        let port = card.ports.iter().find(|p| p.name == port_name).ok_or_else(|| {
+            format!("port {port_name} not found on card {card_id}")
+        })?;
+        port.select_profile().map(|s| s.to_owned())
+    };
+
+    let target_profile = match target_profile {
+        Some(p) if !p.is_empty() => p,
+        _ => return Err(format!("no available profile for card {card_id} port {port_name}")),
+    };
+
+    if active_profile != target_profile {
+        // 3. profile 不同：切换 profile 并等待设备重建完成
+        eprintln!(
+            "[dde-audio] set_port: switch card {card_id} profile {active_profile} -> {target_profile}"
+        );
+        switch_card_profile(pulse, device_manager, card_id, &target_profile, cancel)?;
+    }
+
+    // 4. 设备已重建（或未切换），从 DeviceManager 查该 card 的 sink/source 并设置端口
+    let device_index = {
+        let dm = device_manager.read();
+        if direction == 0 {
+            dm.sinks.values().find(|s| s.card == card_id).map(|s| s.index)
+        } else {
+            dm.sources.values().find(|s| s.card == card_id).map(|s| s.index)
+        }
+    };
+
+    match device_index {
+        Some(index) if direction == 0 => pulse_sink::set_port(pulse, index, port_name),
+        Some(index) => pulse_source::set_port(pulse, index, port_name),
+        None => Err(format!("no device for card {card_id}")),
     }
 }
