@@ -23,7 +23,7 @@ use super::sink;
 use super::sink_input;
 use super::source;
 use super::device_type;
-
+use super::port_priority::{Direction, PortPriority};
 /// Cards 属性 JSON 序列化结构，字段名与 Go 版兼容。
 #[derive(serde::Serialize)]
 struct CardExport<'a> {
@@ -69,6 +69,10 @@ pub struct DeviceManager {
     pub modules: HashMap<String, crate::backend::pulse::module::ModuleState>,
     /// 活跃的音量计量器：id（如 "source3"）→ Meter。
     pub meters: HashMap<String, Arc<meter::Meter>>,
+    /// 输出端口优先级策略。
+    pub output_priority: PortPriority,
+    /// 输入端口优先级策略。
+    pub input_priority: PortPriority,
 }
 
 impl Default for DeviceManager {
@@ -82,6 +86,8 @@ impl Default for DeviceManager {
             default_source: None,
             modules: HashMap::new(),
             meters: HashMap::new(),
+            output_priority: PortPriority::new(Direction::Output),
+            input_priority: PortPriority::new(Direction::Input),
         }
     }
 }
@@ -144,18 +150,26 @@ impl DeviceManager {
         self.sink_inputs.get(&index)
     }
 
-    // ===== Card =====
-
     pub fn add_card(&mut self, index: u32, state: card::Card) {
         self.cards.insert(index, state);
+        self.refresh_priority();
     }
 
     pub fn update_card(&mut self, index: u32, state: card::Card) {
         self.cards.insert(index, state);
+        self.refresh_priority();
     }
 
     pub fn remove_card(&mut self, index: u32) -> Option<card::Card> {
-        self.cards.remove(&index)
+        let removed = self.cards.remove(&index);
+        self.refresh_priority();
+        removed
+    }
+
+    /// 用当前声卡列表刷新输出/输入端口优先级策略。
+    pub fn refresh_priority(&mut self) {
+        self.output_priority.refresh(&self.cards);
+        self.input_priority.refresh(&self.cards);
     }
 
 #[allow(dead_code)]
@@ -257,5 +271,65 @@ fn card_to_export(card: &card::Card, filter_unavailable: bool) -> CardExport<'_>
         id: card.index,
         name: &card.name,
         ports,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::manager::card::{Card, CardStatus, PortInfo};
+
+    fn mk_card(name: &str, ports: Vec<(String, bool)>) -> Card {
+        // (port_name, direction) 仅输出端口
+        Card {
+            index: 0,
+            name: name.to_owned(),
+            active_profile: String::new(),
+            ports: ports
+                .into_iter()
+                .map(|(n, en)| PortInfo {
+                    name: n,
+                    enabled: en,
+                    bluetooth: false,
+                    description: String::new(),
+                    direction: 0,
+                    profiles: vec![],
+                    priority: 0,
+                })
+                .collect(),
+            profiles: vec![],
+            status: CardStatus::Ready,
+            change: None,
+        }
+    }
+
+    fn always_enabled(_: &crate::manager::port_priority::PortKey) -> bool {
+        true
+    }
+
+    /// 声卡增删应刷新端口优先级。
+    #[test]
+    fn card_change_refreshes_priority() {
+        let mut dm = DeviceManager::default();
+        // 初始无卡，无候选
+        assert_eq!(dm.output_priority.len(), 0);
+
+        // 添加内置扬声器卡
+        dm.add_card(1, mk_card("alsa.1", vec![("speaker".into(), true)]));
+        assert_eq!(dm.output_priority.len(), 1);
+        let p = dm.output_priority.prefer_port(always_enabled).unwrap();
+        assert_eq!(p.port_name, "speaker");
+
+        // 添加更高优先的 HDMI 卡 → 优先级刷新，HDMI 优先
+        dm.add_card(2, mk_card("hdmi.2", vec![("hdmi-output".into(), true)]));
+        assert_eq!(dm.output_priority.len(), 2);
+        let p = dm.output_priority.prefer_port(always_enabled).unwrap();
+        assert_eq!(p.port_name, "hdmi-output");
+
+        // 移除 HDMI 卡 → 候选减一，回退到 speaker
+        dm.remove_card(2);
+        assert_eq!(dm.output_priority.len(), 1);
+        let p = dm.output_priority.prefer_port(always_enabled).unwrap();
+        assert_eq!(p.port_name, "speaker");
     }
 }
