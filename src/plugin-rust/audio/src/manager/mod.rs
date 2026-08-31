@@ -331,6 +331,8 @@ impl AudioManager {
 
         // 阻塞等待 event_loop 通知：完成/声卡移除/取消/失败/超时。
         let result = op.wait(std::time::Duration::from_secs(5))?;
+        // 等待期间卡可能被移除（R2），wait 返回后再确认
+        self.ensure_card_alive(card_id)?;
         match result {
             ChangeResult::Complete => Ok(()),
             ChangeResult::Removed => Err(format!("card {card_id} removed during profile switch")),
