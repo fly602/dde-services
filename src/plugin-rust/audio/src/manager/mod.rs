@@ -12,9 +12,11 @@
 
 pub mod audio;
 pub mod card;
+pub mod config;
 pub mod coordinator;
 pub mod device_manager;
 pub mod device_type;
+pub mod dconfig;
 pub mod event_loop;
 pub mod meter;
 pub mod port_priority;
@@ -29,7 +31,9 @@ use parking_lot::RwLock;
 use crate::backend::pulse::module::{MODULE_NULL_SINK, module_argument};
 use crate::backend::pulse::PulseManager;
 
+use config::AudioConfig;
 use device_manager::DeviceManager;
+use port_priority::{Direction, PortKey};
 
 /// D-Bus 服务名。
 #[allow(dead_code)]
@@ -54,9 +58,14 @@ pub struct AudioManager {
     event_loop: event_loop::EventLoop,
     /// 端口设置/优先级切换协调器。
     coordinator: coordinator::SwitchCoordinator,
+    /// 配置持久化。
+    config: AudioConfig,
     /// 事件循环回调用的自身弱引用槽（lib.rs 在 Arc 创建后写入）。
     #[allow(dead_code)]
     manager_slot: std::sync::Arc<parking_lot::RwLock<Option<std::sync::Weak<AudioManager>>>>,
+    /// dconfig 变更监听线程（保活句柄）。
+    #[allow(dead_code)]
+    dconfig_watch: Option<std::thread::JoinHandle<()>>,
 }
 
 impl AudioManager {
@@ -68,8 +77,15 @@ impl AudioManager {
         let pulse = Arc::new(pulse);
         let device_manager = Arc::new(RwLock::new(DeviceManager::default()));
 
+        // 加载持久化配置（禁用端口/用户偏好）
+        let config = AudioConfig::new();
+        config.load();
+
         // 启动前先查询当前音频状态，填充 DeviceManager 并注册 D-Bus 子对象
         init_devices(&pulse, &device_manager, &connection)?;
+
+        // 应用持久化配置（需 DeviceManager 已有 cards 做卡名→id 映射）
+        config.apply_to(&mut *device_manager.write());
 
         // 确保 null-sink 模块存在（端口切换时作为临时 default）
         let _ = load_module(&pulse, &device_manager, MODULE_NULL_SINK, None, None);
@@ -92,14 +108,60 @@ impl AudioManager {
             on_card_event,
         );
 
+        // dconfig 类型优先级：
+        // 1) 启动一次性读取应用到内存策略
+        // 2) 订阅 valueChanged，变更时经 weak slot 重应用
+        let mut dconfig_watch = None;
+        if let Ok(dconn) = zbus::blocking::Connection::system() {
+            match dconfig::load_type_order(&dconn) {
+                Ok(cfg) => {
+                    let mut dm = device_manager.write();
+                    dm.output_priority.set_type_order(cfg.output.clone());
+                    dm.input_priority.set_type_order(cfg.input.clone());
+                    dm.refresh_priority();
+                }
+                Err(e) => eprintln!("[dde-audio] dconfig load failed (using defaults): {e}"),
+            }
+            // 监听回调：经 manager 弱引用升级后应用（new 返回后 slot 才写入）
+            let slot_watch = manager_slot.clone();
+            let apply = Arc::new(move |cfg: dconfig::TypeOrderConfig| {
+                let weak = { slot_watch.read().as_ref().cloned() };
+                if let Some(weak) = weak {
+                    if let Some(mgr) = weak.upgrade() {
+                        mgr.apply_type_order(&cfg);
+                    }
+                }
+            });
+            match dconfig::subscribe(dconn, apply) {
+                Ok(h) => dconfig_watch = Some(h),
+                Err(e) => eprintln!("[dde-audio] dconfig subscribe failed: {e}"),
+            }
+        } else {
+            eprintln!("[dde-audio] dconfig system bus unreachable");
+        }
+
         Ok(Self {
             pulse,
             device_manager,
             connection,
             event_loop,
             coordinator: coordinator::SwitchCoordinator::new(),
+            config,
             manager_slot,
+            dconfig_watch,
         })
+    }
+
+    /// 应用 dconfig 提供的类型优先级顺序到内存策略（不落本地文件）。
+    ///
+    /// 供启动时一次性读取与 `valueChanged` 监听回调共用。
+    pub fn apply_type_order(&self, cfg: &dconfig::TypeOrderConfig) {
+        let mut dm = self.device_manager.write();
+        dm.output_priority
+            .set_type_order(cfg.output.clone());
+        dm.input_priority
+            .set_type_order(cfg.input.clone());
+        dm.refresh_priority();
     }
 
     /// 获取 PulseManager 引用，供 D-Bus 子对象调用底层操作。
@@ -181,19 +243,36 @@ impl AudioManager {
         use coordinator::SwitchKind;
 
         // 手动：记录用户偏好（R6）
+        // 注意：先取卡名（读锁内克隆），释放后再写锁 —— read() 内嵌套 write()
+        // 会触发 parking_lot 非重入死锁（SetPort 曾因卡死 D-Bus 线程）。
         if !auto {
-            if let Some(card) = self.device_manager.read().cards.get(&card_id) {
-                if direction == 0 {
+            let card_name = self
+                .device_manager
+                .read()
+                .cards
+                .get(&card_id)
+                .map(|c| c.name.clone());
+            if let Some(card_name) = card_name {
+                let direction = Direction::from(direction);
+                if direction == Direction::Output {
                     self.device_manager
                         .write()
                         .output_priority
-                        .set_user_prefer(&card.name, port_name);
+                        .set_user_prefer(&card_name, port_name);
                 } else {
                     self.device_manager
                         .write()
                         .input_priority
-                        .set_user_prefer(&card.name, port_name);
+                        .set_user_prefer(&card_name, port_name);
                 }
+                // 持久化用户首选端口（跨重启保留）
+                self.config.set_user_prefer(
+                    direction,
+                    PortKey {
+                        card_name,
+                        port_name: port_name.to_owned(),
+                    },
+                );
             }
         }
 
@@ -444,6 +523,12 @@ impl AudioManager {
         self.device_manager
             .write()
             .set_port_enabled(card_id, port_name, enabled);
+
+        // 持久化：用卡名做键（跨重启稳定）
+        if let Some(card) = self.device_manager.read().cards.get(&card_id) {
+            self.config.set_port_enabled(&card.name, port_name, enabled);
+        }
+
         eprintln!(
             "[dde-audio] set port enabled: card {card_id} port {port_name} enabled={enabled}"
         );

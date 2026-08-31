@@ -19,7 +19,7 @@ use crate::manager::card::Card;
 use crate::manager::device_type::{self, PortType};
 
 /// 端口标识。
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct PortKey {
     pub card_name: String,
     pub port_name: String,
