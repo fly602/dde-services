@@ -22,48 +22,8 @@ use super::card;
 use super::sink;
 use super::sink_input;
 use super::source;
+use super::device_type;
 
-
-// ===== PortType 常量（与 Go 版 priority_policy.go 一致） =====
-
-const PORT_TYPE_BLUETOOTH: u32 = 0;
-const PORT_TYPE_HEADSET: u32 = 1;
-const PORT_TYPE_USB: u32 = 2;
-const PORT_TYPE_BUILTIN: u32 = 3;
-const PORT_TYPE_HDMI: u32 = 4;
-const PORT_TYPE_LINE_IO: u32 = 5;
-#[allow(dead_code)]
-const PORT_TYPE_MULTI_CHANNEL: u32 = 6;
-const PORT_TYPE_UNKNOWN: u32 = 7;
-
-/// 判断端口名称/声卡名是否包含关键字（不区分大小写）。
-fn contains_keyword(card_name: &str, port_name: &str, keyword: &str) -> bool {
-    card_name.to_lowercase().contains(keyword)
-        || port_name.to_lowercase().contains(keyword)
-}
-
-/// 图标端口类型（与 Go 版 GetIconPortType 一致）。
-///
-/// 顺序：LineIO > Builtin > Headset > Hdmi > Bluetooth > Usb > Unknown
-fn get_icon_port_type(card_name: &str, port_name: &str) -> u32 {
-    // 每个 (类型, 关键字列表)
-    let map: &[(u32, &[&str])] = &[
-        (PORT_TYPE_LINE_IO, &["linein", "lineout"]),
-        (PORT_TYPE_BUILTIN, &["speaker", "input-mic"]),
-        (PORT_TYPE_HEADSET, &["rear-mic", "front-mic", "headset", "headphone"]),
-        (PORT_TYPE_HDMI, &["hdmi"]),
-        (PORT_TYPE_BLUETOOTH, &["bluez", "bluetooth"]),
-        (PORT_TYPE_USB, &["usb"]),
-    ];
-    for &(t, keywords) in map {
-        for &k in keywords {
-            if contains_keyword(card_name, port_name, k) {
-                return t;
-            }
-        }
-    }
-    PORT_TYPE_UNKNOWN
-}
 /// Cards 属性 JSON 序列化结构，字段名与 Go 版兼容。
 #[derive(serde::Serialize)]
 struct CardExport<'a> {
@@ -290,7 +250,7 @@ fn card_to_export(card: &card::Card, filter_unavailable: bool) -> CardExport<'_>
             bluetooth: p.bluetooth,
             description: p.description.clone(),
             direction: p.direction,
-            port_type: get_icon_port_type(&card.name, &p.name),
+            port_type: device_type::detect_port_type(&card.name, &p.name).as_u32(),
         })
         .collect();
     CardExport {
