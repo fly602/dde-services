@@ -13,10 +13,11 @@
 pub mod audio;
 pub mod card;
 pub mod device_manager;
+pub mod device_type;
 pub mod event_loop;
 pub mod meter;
+pub mod port_priority;
 pub mod sink;
-pub mod device_type;
 pub mod sink_input;
 pub mod source;
 

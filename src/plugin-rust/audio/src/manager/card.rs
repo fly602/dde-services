@@ -27,6 +27,8 @@ pub struct PortInfo {
     pub direction: u32,
     /// 该端口关联的可用 profile 名称。
     pub profiles: Vec<String>,
+    /// 端口权重（越高越适合作为默认）。
+    pub priority: u32,
 }
 
 impl PortInfo {
@@ -82,6 +84,7 @@ impl From<crate::backend::pulse::card::BackendCard> for Card {
                     description: p.description,
                     direction: p.direction,
                     profiles: p.profiles,
+                    priority: p.priority,
                 })
                 .collect(),
             profiles: b.profiles
