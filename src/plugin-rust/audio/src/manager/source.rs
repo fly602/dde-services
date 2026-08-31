@@ -131,7 +131,13 @@ impl SourceInterface {
         index: u32,
     ) {
         device_manager.write().remove_source(index);
-        // TODO: 回收资源
+        // 清理该设备的 meter（含 D-Bus 对象）
+        let meter_id = format!("source{index}");
+        let mut dm = device_manager.write();
+        if dm.meters.remove(&meter_id).is_some() {
+            use super::meter::Meter;
+            let _ = connection.object_server().remove::<Meter, _>(Meter::path(index, false));
+        }
         let _ = connection
             .object_server()
             .remove::<SourceInterface, _>(Self::path(index));
@@ -198,12 +204,34 @@ impl SourceInterface {
     fn get_meter(&self) -> zbus::fdo::Result<zbus::zvariant::OwnedObjectPath> {
         use super::meter::Meter;
 
-        let meter = Meter::new(self.index, false, self.device_manager.clone());
+        let id = format!("source{}", self.index);
+        // 已存在则直接返回
+        if self.device_manager.read().meters.contains_key(&id) {
+            return zbus::zvariant::ObjectPath::try_from(Meter::path(self.index, false))
+                .map(Into::into)
+                .map_err(|e| zbus::fdo::Error::Failed(e.to_string()));
+        }
+
+        // 创建真实峰值检测 stream
+        let backend = self
+            .pulse
+            .create_source_meter(self.index)
+            .map_err(|e| zbus::fdo::Error::Failed(format!("create source meter failed: {e}")))?;
+        let meter = Meter::new(
+            id.clone(),
+            self.index,
+            false,
+            Some(backend),
+            self.device_manager.clone(),
+            self.connection.clone(),
+        );
         let path = Meter::path(self.index, false);
         self.connection
             .object_server()
-            .at(path.clone(), meter)
+            .at(path.clone(), meter.as_ref().clone())
             .map_err(|e| zbus::fdo::Error::Failed(format!("register meter failed: {e}")))?;
+        // 登记到 DeviceManager
+        self.device_manager.write().meters.insert(id, meter);
         zbus::zvariant::ObjectPath::try_from(path)
             .map(Into::into)
             .map_err(|e| zbus::fdo::Error::Failed(e.to_string()))

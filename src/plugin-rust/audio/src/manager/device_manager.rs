@@ -14,7 +14,9 @@
 //!   的具体逻辑（查 pulse 构造状态），delete 有回收也在子 device 处理
 
 use std::collections::HashMap;
+use std::sync::Arc;
 
+use super::meter;
 // 各设备状态结构体定义在对应子模块，DeviceManager 直接引用子模块类型。
 use super::card;
 use super::sink;
@@ -93,8 +95,9 @@ struct CardPortExport {
 /// 设备管理器。
 ///
 /// 持有四张 HashMap 表管理设备状态，通过 `Arc<RwLock<DeviceManager>>` 共享。
-/// event_loop 写入，D-Bus 接口层读取。
-#[derive(Default)]
+///
+/// 各子模块状态结构体不能 `#[derive(Default)]`（含运行时状态），
+/// 因此手动实现 Default。
 pub struct DeviceManager {
     pub sinks: HashMap<u32, sink::Sink>,
     pub sources: HashMap<u32, source::Source>,
@@ -104,7 +107,25 @@ pub struct DeviceManager {
     pub default_source: Option<String>,
     /// PulseAudio 模块状态：module 名 → 状态。
     pub modules: HashMap<String, crate::backend::pulse::module::ModuleState>,
+    /// 活跃的音量计量器：id（如 "source3"）→ Meter。
+    pub meters: HashMap<String, Arc<meter::Meter>>,
 }
+
+impl Default for DeviceManager {
+    fn default() -> Self {
+        Self {
+            sinks: HashMap::new(),
+            sources: HashMap::new(),
+            sink_inputs: HashMap::new(),
+            cards: HashMap::new(),
+            default_sink: None,
+            default_source: None,
+            modules: HashMap::new(),
+            meters: HashMap::new(),
+        }
+    }
+}
+
 impl DeviceManager {
     // ===== Sink =====
 

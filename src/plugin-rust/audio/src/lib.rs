@@ -184,4 +184,30 @@ mod tests {
         eprintln!("default sink: {sink}");
         eprintln!("default source: {source}");
     }
+
+    /// 验证 source 音量计量：创建 meter，采集后读峰值。
+    #[test]
+    fn source_meter_peak() {
+        let (pulse, _rx) = PulseManager::new().expect("connect to pulse daemon");
+        let (_, source_name) = pulse.default_sink_source().expect("query default source");
+        assert!(!source_name.is_empty(), "should have a default source");
+
+        let source_index = source::query_list(&pulse)
+            .expect("query sources")
+            .into_iter()
+            .find(|s| s.name == source_name)
+            .map(|s| s.index)
+            .expect("default source should exist");
+
+        let meter = pulse
+            .create_source_meter(source_index)
+            .expect("create source meter");
+
+        // 短暂采集（meter 回调在 mainloop 线程，25Hz 采样）
+        std::thread::sleep(std::time::Duration::from_millis(500));
+        let peak = meter.peak();
+        eprintln!("source {source_index} ({source_name}) peak: {peak}");
+        // 峰值应落在合法范围 [0, 1]
+        assert!((0.0..=1.0).contains(&peak), "peak out of range: {peak}");
+    }
 }

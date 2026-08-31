@@ -16,6 +16,7 @@
 //! - [`sink_input`] — 播放流状态、音量/静音/平衡操作
 
 pub mod card;
+pub mod meter;
 pub mod module;
 pub mod sink;
 pub mod sink_input;
@@ -282,6 +283,19 @@ impl PulseManager {
             });
             true
         })
+    }
+
+    /// 创建 source 音量计量器（record stream）。
+    ///
+    /// `Stream::new` 需要 `&mut Context`，且创建必须在 mainloop lock 下完成。
+    /// 与 `execute` 不同：meter stream 创建后由 `SourceMeter` 长期持有，
+    /// 不通过 channel 等回调。
+    pub fn create_source_meter(&self, source_index: u32) -> Result<Arc<meter::SourceMeter>, String> {
+        let mut inner = self.inner.lock().map_err(|e| format!("mutex poisoned: {e}"))?;
+        inner.ml.lock();
+        let result = meter::SourceMeter::create(&mut inner.ctx, source_index);
+        inner.ml.unlock();
+        result
     }
 }
 
