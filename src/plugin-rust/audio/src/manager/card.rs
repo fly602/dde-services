@@ -124,7 +124,9 @@ pub enum ChangeResult {
     Complete,
     /// 声卡被移除，操作终止。
     Removed,
-    /// 失败（当前无生产者，为三态协议预留）。
+    /// 操作被取消（如被手动操作打断）。
+    Cancelled,
+    /// 失败（当前无生产者，为四态协议预留）。
     #[allow(dead_code)]
     Failed(String),
 }
@@ -199,6 +201,11 @@ impl StatusChange {
     /// 广播声卡被移除。
     pub fn signal_removed(&self) {
         self.signal(ChangeResult::Removed);
+    }
+
+    /// 广播操作被取消（如被手动端口设置打断）。
+    pub fn signal_cancelled(&self) {
+        self.signal(ChangeResult::Cancelled);
     }
 
     /// 广播失败。

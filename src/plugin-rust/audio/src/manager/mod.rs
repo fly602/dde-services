@@ -52,6 +52,8 @@ pub struct AudioManager {
     connection: zbus::blocking::Connection,
     #[allow(dead_code)]
     event_loop: event_loop::EventLoop,
+    /// 端口设置/优先级切换协调器。
+    coordinator: coordinator::SwitchCoordinator,
 }
 
 impl AudioManager {
@@ -77,6 +79,7 @@ impl AudioManager {
             device_manager,
             connection,
             event_loop,
+            coordinator: coordinator::SwitchCoordinator::new(),
         })
     }
 
@@ -136,14 +139,46 @@ impl AudioManager {
     }
     /// 设置声卡端口。
     ///
-    /// 流程：
-    /// 1. 若当前声卡的 sink/source 已存在该端口 → 直接设置端口
-    /// 2. 否则 select_profile 确定目标 profile
-    /// 3. 目标 profile 与当前不同 → 记录 pending 并切换 profile，
-    ///    等待设备重建后由 event_loop 完成端口设置
     pub fn set_port(&self, card_id: u32, port_name: &str, direction: u32) -> Result<(), String> {
         use crate::backend::pulse::sink as pulse_sink;
         use crate::backend::pulse::source as pulse_source;
+        use card::CardStatus;
+        use card::ChangeResult;
+        use coordinator::SwitchKind;
+
+        // 获取全局切换互斥（R3/R4：端口设置与优先级自动切换互斥）
+        let _guard = self.coordinator.acquire(SwitchKind::ManualSetPort)?;
+
+        // R1：声卡 Pending 时等待就绪（不返回失败，直到 Ready/Removed/超时）
+        loop {
+            let status = {
+                let dm = self.device_manager.read();
+                dm.cards.get(&card_id).map(|c| c.status)
+            };
+            match status {
+                Some(CardStatus::Ready) => break,
+                Some(CardStatus::Pending) => {
+                    let change = {
+                        let dm = self.device_manager.read();
+                        dm.cards.get(&card_id).and_then(|c| c.change.clone())
+                    };
+                    match change {
+                        Some(ch) => match ch.wait(std::time::Duration::from_secs(5))? {
+                            // 完成/取消后重新检查状态；移除则终止（R2）
+                            ChangeResult::Complete | ChangeResult::Cancelled => continue,
+                            ChangeResult::Removed => {
+                                return Err(format!("card {card_id} removed while waiting for ready"))
+                            }
+                            ChangeResult::Failed(e) => return Err(e),
+                        },
+                        None => return Err(format!("card {card_id} pending but no change handle")),
+                    }
+                }
+                Some(CardStatus::Removing) | None => {
+                    return Err(format!("card {card_id} not available"));
+                }
+            }
+        }
 
         // 从 DeviceManager 读取声卡状态
         let (active_profile, device_index, port_has_profile) = {
@@ -276,11 +311,12 @@ impl AudioManager {
 
         pulse_card::set_card_profile(&self.pulse, card_id, profile)?;
 
-        // 阻塞等待 event_loop 通知：完成/声卡移除/失败/超时。
+        // 阻塞等待 event_loop 通知：完成/声卡移除/取消/失败/超时。
         let result = op.wait(std::time::Duration::from_secs(5))?;
         match result {
             ChangeResult::Complete => Ok(()),
             ChangeResult::Removed => Err(format!("card {card_id} removed during profile switch")),
+            ChangeResult::Cancelled => Err(format!("profile switch cancelled for card {card_id}")),
             ChangeResult::Failed(e) => Err(format!("profile switch failed: {e}")),
         }
     }
