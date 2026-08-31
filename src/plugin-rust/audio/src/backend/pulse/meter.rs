@@ -21,6 +21,15 @@ use libpulse_binding::stream::{FlagSet, PeekResult, Stream};
 /// 与 Go 版 `createMonitorStreamForSource` 一致（rate=25, channels=1）。
 const SAMPLE_RATE: u32 = 25;
 
+/// 音量计量器抽象。
+///
+/// manager 通过此 trait 读取实时峰值，与具体 libpulse stream 解耦；
+/// 测试可注入 mock 实现，无需连接真实 PulseAudio。
+pub trait MeterBackend: Send + Sync {
+    /// 最近一次采样的峰值（0.0~1.0）。
+    fn peak(&self) -> f32;
+}
+
 /// Source 音量计量器。
 ///
 /// 持有 record stream，`peak()` 返回最近一次采样的峰值（0.0~1.0）。
@@ -94,8 +103,10 @@ impl SourceMeter {
         }))
     }
 
-    /// 最近一次采样的峰值（0.0~1.0）。
-    pub fn peak(&self) -> f32 {
+}
+
+impl MeterBackend for SourceMeter {
+    fn peak(&self) -> f32 {
         f32::from_bits(self.peak.load(Ordering::Relaxed))
     }
 }

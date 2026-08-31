@@ -215,7 +215,7 @@ impl SinkInterface {
     // ========== 方法 ==========
 
     fn get_meter(&self) -> zbus::fdo::Result<zbus::zvariant::OwnedObjectPath> {
-        use super::meter::Meter;
+        use super::meter::{Meter, ZbusMeterCleanup};
 
         let id = format!("sink{}", self.index);
         // 已存在则直接返回
@@ -232,7 +232,7 @@ impl SinkInterface {
             true,
             None,
             self.device_manager.clone(),
-            self.connection.clone(),
+            ZbusMeterCleanup::new(self.connection.clone()),
         );
         let path = Meter::path(self.index, true);
         self.connection

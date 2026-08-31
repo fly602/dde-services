@@ -7,10 +7,13 @@
 //! 音量计量器对象。生命周期仿 Go 版 `audio1/meter.go`：
 //! - 创建时置 alive 并启动清理线程（tryQuit）
 //! - `Tick` 方法续命（alive = true）
-//! - 清理线程 10 秒轮询，超时未续命则注销对象并释放资源
+//! - 清理线程轮询，超时未续命则注销对象并释放资源
 //!
-//! Source 的 `Volume` 来自 backend `SourceMeter` 的实时峰值；
+//! Source 的 `Volume` 来自 backend `MeterBackend` 的实时峰值；
 //! Sink 无真实监测（Go 版 Sink.GetMeter 亦为 TODO），Volume 回退读设备静态音量。
+//!
+//! 环境解耦：`MeterBackend`（峰值来源）与 `MeterCleanup`（D-Bus 注销）
+//! 均为 trait，测试可注入 mock，不依赖真实 PulseAudio / D-Bus。
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -20,12 +23,37 @@ use std::time::Duration;
 use parking_lot::RwLock;
 use zbus::interface;
 
-use crate::backend::pulse::meter::SourceMeter;
+use crate::backend::pulse::meter::MeterBackend;
 
 use super::device_manager::DeviceManager;
 
-/// 续命超时：10 秒内未调用 Tick 则销毁。
-const POLL_INTERVAL: Duration = Duration::from_secs(10);
+/// 续命超时：默认轮询间隔，10 秒内未调用 Tick 则销毁。
+const DEFAULT_POLL_INTERVAL: Duration = Duration::from_secs(10);
+
+/// 清理动作抽象：超时后注销 D-Bus 对象。
+///
+/// 生产用 zbus Connection 实现；测试注入 mock 记录调用。
+pub trait MeterCleanup: Send + Sync {
+    /// 按对象路径注销。
+    fn remove(&self, path: &str);
+}
+
+/// 基于 zbus Connection 的清理实现。
+pub struct ZbusMeterCleanup {
+    connection: zbus::blocking::Connection,
+}
+
+impl ZbusMeterCleanup {
+    pub fn new(connection: zbus::blocking::Connection) -> Arc<Self> {
+        Arc::new(Self { connection })
+    }
+}
+
+impl MeterCleanup for ZbusMeterCleanup {
+    fn remove(&self, path: &str) {
+        let _ = self.connection.object_server().remove::<Meter, _>(path);
+    }
+}
 
 /// Meter D-Bus 对象。
 ///
@@ -42,24 +70,46 @@ pub struct Meter {
     is_sink: bool,
     /// 续命标记，与清理线程共享。
     alive: Arc<AtomicBool>,
-    /// 真实峰值计量（source 有，sink 无）。
-    backend: Option<Arc<SourceMeter>>,
+    /// 实时峰值计量（source 有，sink 无）。
+    backend: Option<Arc<dyn MeterBackend>>,
     device_manager: Arc<RwLock<DeviceManager>>,
-    /// D-Bus 连接，清理时注销自身对象。
-    connection: zbus::blocking::Connection,
+    /// 超时后注销 D-Bus 对象的清理动作。
+    cleanup: Arc<dyn MeterCleanup>,
 }
 
 impl Meter {
     /// 构造 Meter，启动清理线程。
     ///
     /// `backend` 为 source 的真实峰值计量；sink 传 None。
+    /// 使用默认 10 秒续命超时。
     pub fn new(
         id: String,
         device_index: u32,
         is_sink: bool,
-        backend: Option<Arc<SourceMeter>>,
+        backend: Option<Arc<dyn MeterBackend>>,
         device_manager: Arc<RwLock<DeviceManager>>,
-        connection: zbus::blocking::Connection,
+        cleanup: Arc<dyn MeterCleanup>,
+    ) -> Arc<Self> {
+        Self::new_with_interval(
+            id,
+            device_index,
+            is_sink,
+            backend,
+            device_manager,
+            cleanup,
+            DEFAULT_POLL_INTERVAL,
+        )
+    }
+
+    /// 构造 Meter，指定清理轮询间隔（测试用短间隔）。
+    pub fn new_with_interval(
+        id: String,
+        device_index: u32,
+        is_sink: bool,
+        backend: Option<Arc<dyn MeterBackend>>,
+        device_manager: Arc<RwLock<DeviceManager>>,
+        cleanup: Arc<dyn MeterCleanup>,
+        poll_interval: Duration,
     ) -> Arc<Self> {
         let alive = Arc::new(AtomicBool::new(true));
         let meter = Arc::new(Self {
@@ -69,27 +119,24 @@ impl Meter {
             alive: alive.clone(),
             backend,
             device_manager,
-            connection,
+            cleanup,
         });
         // 启动清理线程（仿 Go tryQuit）
         let meter_weak = Arc::downgrade(&meter);
         thread::spawn(move || {
             loop {
-                thread::sleep(POLL_INTERVAL);
+                thread::sleep(poll_interval);
                 if !alive.load(Ordering::Relaxed) {
                     break;
                 }
                 alive.store(false, Ordering::Relaxed);
             }
             // 超时未续命：注销 D-Bus 对象并从 DeviceManager 移除
-            // （Arc 引用降为 0 时 backend SourceMeter 自动释放）
+            // （Arc 引用降为 0 时 backend 自动释放）
             if let Some(meter) = meter_weak.upgrade() {
                 let id = meter.id.clone();
                 let path = Meter::path(meter.device_index, meter.is_sink);
-                let _ = meter
-                    .connection
-                    .object_server()
-                    .remove::<Meter, _>(path);
+                meter.cleanup.remove(&path);
                 let mut dm = meter.device_manager.write();
                 // 仅当仍是同一个实例时移除，避免误删新 meter
                 if dm.meters.get(&id).map(|m| Arc::ptr_eq(m, &meter)) == Some(true) {
@@ -104,6 +151,13 @@ impl Meter {
     pub fn path(device_index: u32, is_sink: bool) -> String {
         let kind = if is_sink { "Sink" } else { "Source" };
         format!("/org/deepin/dde/Audio2/Meter{kind}{device_index}")
+    }
+
+    /// 续命：标记 alive，清理线程据此判断是否销毁。
+    ///
+    /// 对应 D-Bus 的 Tick 方法（zbus 接口层调用），也供测试直接调用。
+    pub fn keep_alive(&self) {
+        self.alive.store(true, Ordering::Relaxed);
     }
 
     /// 当前音量。
@@ -138,7 +192,7 @@ impl Meter {
 
     /// 音量计量 tick 方法，续命。
     fn tick(&self) -> zbus::fdo::Result<()> {
-        self.alive.store(true, Ordering::Relaxed);
+        self.keep_alive();
         Ok(())
     }
 }

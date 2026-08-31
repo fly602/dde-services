@@ -10,7 +10,7 @@ publish = false
 
 [lib]
 name = "plugin_rust_audio"
-crate-type = ["cdylib"]
+crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 zbus = "5.19.0"

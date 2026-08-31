@@ -202,7 +202,7 @@ impl SourceInterface {
     // ========== 方法 ==========
 
     fn get_meter(&self) -> zbus::fdo::Result<zbus::zvariant::OwnedObjectPath> {
-        use super::meter::Meter;
+        use super::meter::{Meter, ZbusMeterCleanup};
 
         let id = format!("source{}", self.index);
         // 已存在则直接返回
@@ -213,7 +213,7 @@ impl SourceInterface {
         }
 
         // 创建真实峰值检测 stream
-        let backend = self
+        let backend: Arc<dyn crate::backend::pulse::meter::MeterBackend> = self
             .pulse
             .create_source_meter(self.index)
             .map_err(|e| zbus::fdo::Error::Failed(format!("create source meter failed: {e}")))?;
@@ -223,7 +223,7 @@ impl SourceInterface {
             false,
             Some(backend),
             self.device_manager.clone(),
-            self.connection.clone(),
+            ZbusMeterCleanup::new(self.connection.clone()),
         );
         let path = Meter::path(self.index, false);
         self.connection
