@@ -12,6 +12,7 @@
 
 pub mod audio;
 pub mod card;
+pub mod coordinator;
 pub mod device_manager;
 pub mod device_type;
 pub mod event_loop;
