@@ -63,7 +63,7 @@ fn emit_audio_list_changed(connection: &zbus::blocking::Connection, props: &[&st
     emit_properties_changed(
         connection,
         DBUS_PATH,
-        "org.deepin.dde.Audio2",
+        "org.deepin.dde.Audio1",
         &HashMap::new(),
         props,
     );
@@ -148,7 +148,7 @@ impl EventLoop {
                         emit_device_changed(
                             &connection,
                             &path,
-                            "org.deepin.dde.Audio2.Sink",
+                            "org.deepin.dde.Audio1.Sink",
                             &["Name", "Description", "Volume", "Mute", "BaseVolume", "Balance", "Fade", "Card", "Ports"],
                         );
                     }
@@ -167,7 +167,7 @@ impl EventLoop {
                         emit_device_changed(
                             &connection,
                             &path,
-                            "org.deepin.dde.Audio2.Source",
+                            "org.deepin.dde.Audio1.Source",
                             &["Name", "Description", "Volume", "Mute", "BaseVolume", "Balance", "Fade", "Card", "Ports"],
                         );
                     }
@@ -185,7 +185,7 @@ impl EventLoop {
                         emit_device_changed(
                             &connection,
                             &path,
-                            "org.deepin.dde.Audio2.SinkInput",
+                            "org.deepin.dde.Audio1.SinkInput",
                             &["Name", "Volume", "Mute", "Balance", "Fade"],
                         );
                     }

@@ -2,7 +2,7 @@
 //
 // SPDX-License-Identifier: LGPL-3.0-or-later
 
-//! `org.deepin.dde.Audio2.Sink` 接口与设备生命周期。
+//! `org.deepin.dde.Audio1.Sink` 接口与设备生命周期。
 //!
 //! - `SinkInterface::new` — 事件到达时创建 Sink 写入 DeviceManager，并注册 D-Bus 对象
 //! - `SinkInterface::update` — 事件到达时更新 Sink
@@ -92,7 +92,7 @@ impl SinkInterface {
 
     /// 生成 Sink 的 D-Bus 对象路径。
     pub fn path(index: u32) -> String {
-        format!("/org/deepin/dde/Audio2/Sink{index}")
+        format!("/org/deepin/dde/Audio1/Sink{index}")
     }
 
     fn state(&self) -> Option<Sink> {
@@ -158,7 +158,7 @@ impl SinkInterface {
     }
 }
 
-#[interface(name = "org.deepin.dde.Audio2.Sink")]
+#[interface(name = "org.deepin.dde.Audio1.Sink")]
 impl SinkInterface {
     // ========== 属性 ==========
 

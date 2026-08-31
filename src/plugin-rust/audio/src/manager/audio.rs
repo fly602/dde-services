@@ -2,7 +2,7 @@
 //
 // SPDX-License-Identifier: LGPL-3.0-or-later
 
-//! `org.deepin.dde.Audio2` 主接口。
+//! `org.deepin.dde.Audio1` 主接口。
 //!
 //! 属性和方法对应 Go 版 `Audio` 结构体的导出成员和 `exported_methods_auto.go`。
 //! 设备列表从 `DeviceManager` 读取，Audio 级操作委托给 `AudioManager`。
@@ -33,7 +33,7 @@ impl Audio {
         let reg = self.device_manager.read();
         reg.sinks
             .keys()
-            .map(|index| zbus::zvariant::ObjectPath::try_from(format!("/org/deepin/dde/Audio2/Sink{index}")).unwrap().into())
+            .map(|index| zbus::zvariant::ObjectPath::try_from(format!("/org/deepin/dde/Audio1/Sink{index}")).unwrap().into())
             .collect()
     }
 
@@ -41,7 +41,7 @@ impl Audio {
         let reg = self.device_manager.read();
         reg.sources
             .keys()
-            .map(|index| zbus::zvariant::ObjectPath::try_from(format!("/org/deepin/dde/Audio2/Source{index}")).unwrap().into())
+            .map(|index| zbus::zvariant::ObjectPath::try_from(format!("/org/deepin/dde/Audio1/Source{index}")).unwrap().into())
             .collect()
     }
 
@@ -49,7 +49,7 @@ impl Audio {
         let reg = self.device_manager.read();
         reg.sink_inputs
             .keys()
-            .map(|index| zbus::zvariant::ObjectPath::try_from(format!("/org/deepin/dde/Audio2/SinkInput{index}")).unwrap().into())
+            .map(|index| zbus::zvariant::ObjectPath::try_from(format!("/org/deepin/dde/Audio1/SinkInput{index}")).unwrap().into())
             .collect()
     }
 
@@ -61,7 +61,7 @@ impl Audio {
             .and_then(|name| reg.find_sink_index_by_name(name));
         match index {
             Some(i) => zbus::zvariant::ObjectPath::try_from(
-                format!("/org/deepin/dde/Audio2/Sink{i}"),
+                format!("/org/deepin/dde/Audio1/Sink{i}"),
             )
             .unwrap()
             .into(),
@@ -77,7 +77,7 @@ impl Audio {
             .and_then(|name| reg.find_source_index_by_name(name));
         match index {
             Some(i) => zbus::zvariant::ObjectPath::try_from(
-                format!("/org/deepin/dde/Audio2/Source{i}"),
+                format!("/org/deepin/dde/Audio1/Source{i}"),
             )
             .unwrap()
             .into(),
@@ -86,7 +86,7 @@ impl Audio {
     }
 }
 
-#[interface(name = "org.deepin.dde.Audio2")]
+#[interface(name = "org.deepin.dde.Audio1")]
 impl Audio {
     // ========== 属性 ==========
 

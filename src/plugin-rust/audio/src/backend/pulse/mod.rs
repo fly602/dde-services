@@ -201,6 +201,28 @@ impl PulseManager {
         rx.recv().map_err(|e| format!("callback dropped: {e}"))
     }
 
+    /// 同 `execute`，但闭包可拿到 `&mut Context`（部分 API 需要可变借用，
+    /// 如 `set_default_sink`）。execute 内持有 mainloop 锁，同刻唯一访问。
+    pub fn execute_mut<R: Send + 'static, F>(&self, op: F) -> Result<R, String>
+    where
+        F: FnOnce(&mut Context, crossbeam_channel::Sender<R>) -> bool,
+    {
+        let (tx, rx) = crossbeam_channel::bounded(1);
+
+        let mut inner = self.inner.lock().map_err(|e| format!("mutex poisoned: {e}"))?;
+        inner.ml.lock();
+        let sent = op(&mut inner.ctx, tx);
+        inner.ml.unlock();
+
+        if !sent {
+            return Err("pulse request rejected".into());
+        }
+
+        drop(inner);
+
+        rx.recv().map_err(|e| format!("callback dropped: {e}"))
+    }
+
     /// 提交列表查询操作，收集多次回调结果直到 End。
     ///
     /// 与 `execute` 不同：列表查询回调会触发多次（每个 item 一次），
@@ -241,6 +263,20 @@ impl PulseManager {
             });
             true
         })
+    }
+
+    /// 设置默认 sink。
+    ///
+    /// 供单声道切换等场景使用：把 mono-sink 设为默认输出。
+    pub fn set_default_sink(&self, name: &str) -> Result<(), String> {
+        let name = name.to_owned();
+        self.execute_mut(|ctx, tx| {
+            ctx.set_default_sink(&name, move |ok| {
+                let _ = tx.send(ok);
+            });
+            true
+        })?;
+        Ok(())
     }
 
     /// 卸载模块。

@@ -37,10 +37,10 @@ use port_priority::{Direction, PortKey};
 
 /// D-Bus 服务名。
 #[allow(dead_code)]
-pub const DBUS_SERVICE_NAME: &str = "org.deepin.dde.Audio2";
+pub const DBUS_SERVICE_NAME: &str = "org.deepin.dde.Audio1";
 
 /// D-Bus 主对象路径。
-pub const DBUS_PATH: &str = "/org/deepin/dde/Audio2";
+pub const DBUS_PATH: &str = "/org/deepin/dde/Audio1";
 
 /// 音频管理器。
 ///
@@ -66,6 +66,8 @@ pub struct AudioManager {
     /// dconfig 变更监听线程（保活句柄）。
     #[allow(dead_code)]
     dconfig_watch: Option<std::thread::JoinHandle<()>>,
+    /// 单声道开关状态。
+    mono: std::sync::atomic::AtomicBool,
 }
 
 impl AudioManager {
@@ -162,6 +164,7 @@ impl AudioManager {
             config,
             manager_slot,
             dconfig_watch,
+            mono: std::sync::atomic::AtomicBool::new(false),
         })
     }
 
@@ -252,8 +255,10 @@ impl AudioManager {
     pub fn max_ui_volume(&self) -> f64 {
         1.0
     }
+    /// 单声道是否开启。
     pub fn mono(&self) -> bool {
-        false
+        use std::sync::atomic::Ordering;
+        self.mono.load(Ordering::SeqCst)
     }
 
     // ===== Audio 级别方法（后续实现） =====
@@ -261,8 +266,50 @@ impl AudioManager {
     pub fn set_bluetooth_audio_mode(&self, _mode: &str) -> Result<(), String> {
         Err("unimplemented".into())
     }
-    pub fn set_mono(&self, _enable: bool) -> Result<(), String> {
-        Err("unimplemented".into())
+    /// 开启/关闭单声道。
+    ///
+    /// 开启：加载 `module-remap-sink` 创建 mono-sink（master 绑定当前
+    /// 物理默认 sink），并设为默认输出；关闭：卸载 mono 模块，恢复默认。
+    pub fn set_mono(&self, enable: bool) -> Result<(), String> {
+        use crate::backend::pulse::module::{MODULE_REMAP_SINK, MONO_SINK_NAME};
+        use std::sync::atomic::Ordering;
+
+        if self.mono.load(Ordering::SeqCst) == enable {
+            return Ok(());
+        }
+
+        if enable {
+            // 取当前默认 sink 作为 mono 的 master（物理设备）
+            let (default_sink, _) = self.pulse.default_sink_source()?;
+            if default_sink.is_empty() || default_sink == MONO_SINK_NAME {
+                return Err("no physical default sink for mono".into());
+            }
+            // 加载 remap-sink 模块（参数在 module_argument 中编排）
+            load_module(
+                &self.pulse,
+                &self.device_manager,
+                MODULE_REMAP_SINK,
+                Some(&default_sink),
+                None,
+            )?;
+            // mono-sink 设为默认输出
+            self.pulse.set_default_sink(MONO_SINK_NAME)?;
+            eprintln!("[dde-audio] mono enabled (master {default_sink})");
+        } else {
+            // 卸载 mono 模块：先查索引再卸载
+            if let Some(index) = find_module_index(&self.pulse, MODULE_REMAP_SINK)? {
+                self.pulse.unload_module(index)?;
+                // 恢复默认 sink 为物理设备
+                let (default_sink, _) = self.pulse.default_sink_source()?;
+                if default_sink != MONO_SINK_NAME && !default_sink.is_empty() {
+                    self.pulse.set_default_sink(&default_sink)?;
+                }
+            }
+            eprintln!("[dde-audio] mono disabled");
+        }
+
+        self.mono.store(enable, Ordering::SeqCst);
+        Ok(())
     }
     /// 设置声卡端口。
     ///

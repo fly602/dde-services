@@ -7,6 +7,11 @@ find_program(CARGO_EXECUTABLE cargo REQUIRED)
 set(RUST_TARGET_DIR "${CMAKE_BINARY_DIR}/cargo")
 set(RUST_PLUGIN "${RUST_TARGET_DIR}/debug/libplugin_rust_audio.so")
 
+# 收集全部 Rust 源文件作为增量构建依赖（新增文件自动纳入，避免漏改不重编）
+file(GLOB_RECURSE RUST_SOURCES
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/*.rs"
+    "${CMAKE_CURRENT_SOURCE_DIR}/Cargo.toml")
+
 add_custom_command(
     OUTPUT "${RUST_PLUGIN}"
     COMMAND
@@ -15,24 +20,7 @@ add_custom_command(
         ${CARGO_EXECUTABLE} build
             --manifest-path "${CMAKE_CURRENT_SOURCE_DIR}/Cargo.toml"
     DEPENDS
-        "${CMAKE_CURRENT_SOURCE_DIR}/Cargo.toml"
-        "${CMAKE_CURRENT_SOURCE_DIR}/src/lib.rs"
-        "${CMAKE_CURRENT_SOURCE_DIR}/src/abi.rs"
-        "${CMAKE_CURRENT_SOURCE_DIR}/src/backend/mod.rs"
-        "${CMAKE_CURRENT_SOURCE_DIR}/src/backend/pulse/mod.rs"
-        "${CMAKE_CURRENT_SOURCE_DIR}/src/backend/pulse/card.rs"
-        "${CMAKE_CURRENT_SOURCE_DIR}/src/backend/pulse/sink.rs"
-        "${CMAKE_CURRENT_SOURCE_DIR}/src/backend/pulse/source.rs"
-        "${CMAKE_CURRENT_SOURCE_DIR}/src/backend/pulse/sink_input.rs"
-        "${CMAKE_CURRENT_SOURCE_DIR}/src/manager/mod.rs"
-        "${CMAKE_CURRENT_SOURCE_DIR}/src/manager/audio.rs"
-        "${CMAKE_CURRENT_SOURCE_DIR}/src/manager/card.rs"
-        "${CMAKE_CURRENT_SOURCE_DIR}/src/manager/device_manager.rs"
-        "${CMAKE_CURRENT_SOURCE_DIR}/src/manager/event_loop.rs"
-        "${CMAKE_CURRENT_SOURCE_DIR}/src/manager/sink.rs"
-        "${CMAKE_CURRENT_SOURCE_DIR}/src/manager/source.rs"
-        "${CMAKE_CURRENT_SOURCE_DIR}/src/manager/sink_input.rs"
-        "${CMAKE_CURRENT_SOURCE_DIR}/src/manager/meter.rs"
+        ${RUST_SOURCES}
     WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
     VERBATIM
 )

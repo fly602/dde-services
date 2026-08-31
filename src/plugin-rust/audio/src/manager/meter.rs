@@ -2,7 +2,7 @@
 //
 // SPDX-License-Identifier: LGPL-3.0-or-later
 
-//! `org.deepin.dde.Audio2.Meter` 接口。
+//! `org.deepin.dde.Audio1.Meter` 接口。
 //!
 //! 音量计量器对象。生命周期仿 Go 版 `audio1/meter.go`：
 //! - 创建时置 alive 并启动清理线程（tryQuit）
@@ -150,7 +150,7 @@ impl Meter {
     /// 生成 Meter 的 D-Bus 对象路径。
     pub fn path(device_index: u32, is_sink: bool) -> String {
         let kind = if is_sink { "Sink" } else { "Source" };
-        format!("/org/deepin/dde/Audio2/Meter{kind}{device_index}")
+        format!("/org/deepin/dde/Audio1/Meter{kind}{device_index}")
     }
 
     /// 续命：标记 alive，清理线程据此判断是否销毁。
@@ -182,7 +182,7 @@ impl Meter {
     }
 }
 
-#[interface(name = "org.deepin.dde.Audio2.Meter")]
+#[interface(name = "org.deepin.dde.Audio1.Meter")]
 impl Meter {
     /// 当前音量。
     #[zbus(property)]

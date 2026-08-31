@@ -2,7 +2,7 @@
 //
 // SPDX-License-Identifier: LGPL-3.0-or-later
 
-//! `org.deepin.dde.Audio2.Source` 接口与设备生命周期。
+//! `org.deepin.dde.Audio1.Source` 接口与设备生命周期。
 //!
 //! - `SourceInterface::new` — 事件到达时创建 Source 写入 DeviceManager，并注册 D-Bus 对象
 //! - `SourceInterface::update` — 事件到达时更新 Source
@@ -82,7 +82,7 @@ impl SourceInterface {
 
     /// 生成 Source 的 D-Bus 对象路径。
     pub fn path(index: u32) -> String {
-        format!("/org/deepin/dde/Audio2/Source{index}")
+        format!("/org/deepin/dde/Audio1/Source{index}")
     }
 
     fn state(&self) -> Option<Source> {
@@ -145,7 +145,7 @@ impl SourceInterface {
     }
 }
 
-#[interface(name = "org.deepin.dde.Audio2.Source")]
+#[interface(name = "org.deepin.dde.Audio1.Source")]
 impl SourceInterface {
     // ========== 属性 ==========
 

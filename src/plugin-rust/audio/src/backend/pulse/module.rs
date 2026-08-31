@@ -27,6 +27,9 @@ pub const MODULE_ECHO_CANCEL: &str = "module-echo-cancel";
 #[allow(dead_code)]
 pub const NULL_SINK_NAME: &str = "null-sink";
 
+/// 加载 remap-sink（单声道）后创建的 sink 名。
+pub const MONO_SINK_NAME: &str = "mono-sink";
+
 /// 模块超时时间。
 #[allow(dead_code)]
 const MODULE_LOAD_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(3);

@@ -7,7 +7,7 @@
 //! 编译为 `cdylib`，由 deepin-service-manager 的 Rust 加载后端通过
 //! `DSMRustStartV1` / `DSMRustStopV1` ABI 加载和卸载。
 //!
-//! 插件使用 zbus 在 session/system bus 上注册 `org.deepin.dde.Audio2` 服务，
+//! 插件使用 zbus 在 session/system bus 上注册 `org.deepin.dde.Audio1` 服务，
 //! 持有 blocking Connection 以保持服务存活。
 
 mod abi;
