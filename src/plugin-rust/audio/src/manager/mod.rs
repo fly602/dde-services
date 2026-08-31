@@ -206,6 +206,9 @@ impl AudioManager {
             )
         };
 
+        // 检查卡未被移除/操作未取消（R2/R4：任何阶段可终止）
+        self.ensure_card_alive(card_id)?;
+
         // 1. 设备已存在且包含目标端口 → 直接设置
         if let Some(index) = device_index {
             let has_port = {
@@ -254,6 +257,9 @@ impl AudioManager {
             _ => return Err(format!("no available profile for card {card_id} port {port_name}")),
         };
 
+        // 切换前再检查一次（等待期间可能已被移除/取消）
+        self.ensure_card_alive(card_id)?;
+
         if active_profile != target_profile {
             // 3. profile 不同：切换 profile 并等待设备重建完成
             eprintln!(
@@ -263,6 +269,7 @@ impl AudioManager {
         }
 
         // 4. 设备已重建（或未切换），从 DeviceManager 查该 card 的 sink/source 并设置端口
+        self.ensure_card_alive(card_id)?;
         let device_index = {
             let dm = self.device_manager.read();
             if direction == 0 {
@@ -277,6 +284,17 @@ impl AudioManager {
             Some(index) => pulse_source::set_port(&self.pulse, index, port_name),
             None => Err(format!("no device for card {card_id}")),
         }
+    }
+
+    /// 检查声卡仍存在（未被移除）。声卡移除是可靠取消信号源（R2）。
+    ///
+    /// 在 set_port 的各操作阶段（直接设端口/切profile/最终设端口）前调用，
+    /// 确保任何阶段的卡移除都能终止操作。
+    fn ensure_card_alive(&self, card_id: u32) -> Result<(), String> {
+        if !self.device_manager.read().cards.contains_key(&card_id) {
+            return Err(format!("card {card_id} removed"));
+        }
+        Ok(())
     }
 
     /// 切换声卡 profile 并等待设备重建完成。
