@@ -242,18 +242,18 @@ fn state_from_info(info: &libpulse_binding::context::introspect::SourceInfo) -> 
         .map(|p| BackendPort {
             name: p.name.as_deref().unwrap_or("").to_owned(),
             description: p.description.as_deref().unwrap_or("").to_owned(),
-            direction: 1, // source 方向固定为输入
+            direction: 2, // source 方向固定为输入（D-Bus 契约：2=输入）
         })
         .collect();
 
     let active_port = info.active_port.as_ref().map(|p| BackendPort {
         name: p.name.as_deref().unwrap_or("").to_owned(),
         description: p.description.as_deref().unwrap_or("").to_owned(),
-        direction: 1,
+        direction: 2,
     }).unwrap_or_else(|| BackendPort {
         name: String::new(),
         description: String::new(),
-        direction: 1,
+        direction: 2,
     });
 
     let vol = info.volume.avg();

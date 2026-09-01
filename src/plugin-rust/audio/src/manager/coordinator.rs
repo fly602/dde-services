@@ -322,7 +322,7 @@ mod tests {
         TaskOp::SetPort {
             card_id: 1,
             port_name: name.to_owned(),
-            direction: 0,
+            direction: 1,
             auto: false,
         }
     }

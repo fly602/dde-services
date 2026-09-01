@@ -310,7 +310,7 @@ mod tests {
                     enabled: en,
                     bluetooth: false,
                     description: String::new(),
-                    direction: 0,
+                    direction: 1,
                     profiles: vec![],
                     priority: 0,
                 })

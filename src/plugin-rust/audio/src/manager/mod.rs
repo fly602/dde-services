@@ -422,7 +422,7 @@ impl AudioManager {
                     Some(cid) => dm.sinks.values().any(|s| s.card == cid),
                     None => false,
                 }
-            }).map(|p| (p.card_id, p.port_name.clone(), 0u32))
+            }).map(|p| (p.card_id, p.port_name.clone(), 1u32))
         };
         if let Some((card_id, port_name, dir)) = out_target {
             let _ = self.set_port_inner(card_id, &port_name, dir, true, cancel);
@@ -439,7 +439,7 @@ impl AudioManager {
                     Some(cid) => dm.sources.values().any(|s| s.card == cid),
                     None => false,
                 }
-            }).map(|p| (p.card_id, p.port_name.clone(), 1u32))
+            }).map(|p| (p.card_id, p.port_name.clone(), 2u32))
         };
         if let Some((card_id, port_name, dir)) = in_target {
             let _ = self.set_port_inner(card_id, &port_name, dir, true, cancel);

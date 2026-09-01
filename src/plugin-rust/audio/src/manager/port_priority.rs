@@ -44,9 +44,9 @@ pub enum Direction {
 }
 
 impl From<u32> for Direction {
-    /// `PortInfo.direction` 语义：0=输出(sink)，1=输入(source)。
+    /// `PortInfo.direction` 语义（D-Bus 契约）：1=输出(sink)，2=输入(source)。
     fn from(v: u32) -> Self {
-        if v == 1 {
+        if v == 2 {
             Direction::Input
         } else {
             Direction::Output
@@ -256,10 +256,10 @@ mod tests {
         let mut cards = HashMap::new();
         // 内置扬声器端口 priority 低，但类型 Builtin 高于 Usb
         cards.insert(1, mk_card(1, "alsa.1", vec![
-            ("analog-output-speaker".into(), 0, 10, true),
+            ("analog-output-speaker".into(), 1, 10, true),
         ]));
         cards.insert(2, mk_card(2, "usb.2", vec![
-            ("usb-output".into(), 0, 100, true),
+            ("usb-output".into(), 1, 100, true),
         ]));
         pm.refresh(&cards, &HashSet::new());
         let p = pm.prefer_port(always_enabled).unwrap();
@@ -272,8 +272,8 @@ mod tests {
         let mut pm = PortPriority::new(Direction::Input);
         let mut cards = HashMap::new();
         cards.insert(1, mk_card(1, "alsa.1", vec![
-            ("input-mic".into(), 1, 0, true),
-            ("linein".into(), 1, 10, true),
+            ("input-mic".into(), 2, 0, true),
+            ("linein".into(), 2, 10, true),
         ]));
         pm.refresh(&cards, &HashSet::new());
         // 默认 Builtin 优先
@@ -288,8 +288,8 @@ mod tests {
         let mut pm = PortPriority::new(Direction::Output);
         let mut cards = HashMap::new();
         cards.insert(1, mk_card(1, "alsa.1", vec![
-            ("analog-output-a".into(), 0, 5, true),
-            ("analog-output-b".into(), 0, 50, true),
+            ("analog-output-a".into(), 1, 5, true),
+            ("analog-output-b".into(), 1, 50, true),
         ]));
         pm.refresh(&cards, &HashSet::new());
         // 同类型 Builtin：priority 大者优先
@@ -301,8 +301,8 @@ mod tests {
         let mut pm = PortPriority::new(Direction::Output);
         let mut cards = HashMap::new();
         cards.insert(1, mk_card(1, "alsa.1", vec![
-            ("hdmi-output".into(), 0, 10, true),
-            ("analog-output".into(), 0, 5, false),  // 禁用
+            ("hdmi-output".into(), 1, 10, true),
+            ("analog-output".into(), 1, 5, false),  // 禁用
         ]));
         pm.refresh(&cards, &HashSet::new());
         assert_eq!(pm.prefer_port(always_enabled).unwrap().port_name, "hdmi-output");

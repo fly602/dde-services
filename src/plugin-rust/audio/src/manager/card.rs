@@ -509,7 +509,7 @@ pub fn set_port(
         })?;
 
         // 查找该 card 的 sink/source 索引
-        let device_index = if direction == 0 {
+        let device_index = if direction == 1 {
             dm.sinks.values().find(|s| s.card == card_id).map(|s| s.index)
         } else {
             dm.sources.values().find(|s| s.card == card_id).map(|s| s.index)
@@ -526,7 +526,7 @@ pub fn set_port(
     if let Some(index) = device_index {
         let has_port = {
             let dm = device_manager.read();
-            if direction == 0 {
+            if direction == 1 {
                 dm.sinks
                     .get(&index)
                     .map(|s| s.ports.iter().any(|p| p.name == port_name))
@@ -540,7 +540,7 @@ pub fn set_port(
         };
         if has_port {
             eprintln!("[dde-audio] set_port: device {index} already has port {port_name}, set directly");
-            return if direction == 0 {
+            return if direction == 1 {
                 pulse_sink::set_port(pulse, index, port_name)
             } else {
                 pulse_source::set_port(pulse, index, port_name)
@@ -581,7 +581,7 @@ pub fn set_port(
     // 4. 设备已重建（或未切换），从 DeviceManager 查该 card 的 sink/source 并设置端口
     let device_index = {
         let dm = device_manager.read();
-        if direction == 0 {
+        if direction == 1 {
             dm.sinks.values().find(|s| s.card == card_id).map(|s| s.index)
         } else {
             dm.sources.values().find(|s| s.card == card_id).map(|s| s.index)
@@ -589,7 +589,7 @@ pub fn set_port(
     };
 
     match device_index {
-        Some(index) if direction == 0 => pulse_sink::set_port(pulse, index, port_name),
+        Some(index) if direction == 1 => pulse_sink::set_port(pulse, index, port_name),
         Some(index) => pulse_source::set_port(pulse, index, port_name),
         None => Err(format!("no device for card {card_id}")),
     }

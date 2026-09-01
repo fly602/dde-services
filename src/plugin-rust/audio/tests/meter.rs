@@ -85,7 +85,7 @@ fn volume_fallback_to_sink_state() {
             active_port: Port {
                 name: String::new(),
                 description: String::new(),
-                direction: 0,
+                direction: 1,
             },
             card: 1,
         },

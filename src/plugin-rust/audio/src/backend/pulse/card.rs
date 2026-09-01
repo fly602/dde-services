@@ -188,7 +188,6 @@ pub fn query_list(pulse: &PulseManager) -> Result<Vec<BackendCard>, String> {
 
 fn state_from_info(info: &libpulse_binding::context::introspect::CardInfo) -> BackendCard {
     use libpulse_binding::def::PortAvailable;
-    use libpulse_binding::direction;
 
     let ports = info
         .ports
@@ -196,7 +195,9 @@ fn state_from_info(info: &libpulse_binding::context::introspect::CardInfo) -> Ba
         .map(|p| BackendCardPort {
             name: p.name.as_deref().unwrap_or("").to_owned(),
             description: p.description.as_deref().unwrap_or("").to_owned(),
-            direction: if p.direction.contains(direction::FlagSet::OUTPUT) { 0 } else { 1 },
+            // D-Bus 契约：直接取 pulse 方向位掩码（1=输出，2=输入，3=双向），
+            // 与 Go 版 `Direction: int(c.direction)`、控制中心 Port::Out=1/In=2 一致。
+            direction: p.direction.bits() as u32,
             profiles: p.profiles.iter()
                 .filter_map(|prof| prof.name.as_deref().map(|n| n.to_owned()))
                 .collect(),
