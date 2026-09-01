@@ -110,8 +110,8 @@ pub struct BackendCardPort {
     pub name: String,
     pub description: String,
     pub direction: u32,
-    /// 端口关联的 profile 名。
-    pub profiles: Vec<String>,
+    /// 端口关联的 profile（含优先级/可用性，用于选最优）。
+    pub profiles: Vec<BackendCardProfile>,
     /// 端口权重（越高越适合作为默认）。
     pub priority: u32,
     /// 端口是否可用。
@@ -199,7 +199,12 @@ fn state_from_info(info: &libpulse_binding::context::introspect::CardInfo) -> Ba
             // 与 Go 版 `Direction: int(c.direction)`、控制中心 Port::Out=1/In=2 一致。
             direction: p.direction.bits() as u32,
             profiles: p.profiles.iter()
-                .filter_map(|prof| prof.name.as_deref().map(|n| n.to_owned()))
+                .map(|prof| BackendCardProfile {
+                    name: prof.name.as_deref().unwrap_or("").to_owned(),
+                    description: prof.description.as_deref().unwrap_or("").to_owned(),
+                    priority: prof.priority,
+                    available: prof.available,
+                })
                 .collect(),
             priority: p.priority,
             available: p.available != PortAvailable::No,

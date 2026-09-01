@@ -25,8 +25,8 @@ pub struct PortInfo {
     pub bluetooth: bool,
     pub description: String,
     pub direction: u32,
-    /// 该端口关联的可用 profile 名称。
-    pub profiles: Vec<String>,
+    /// 该端口关联的 profile（含优先级/可用性，用于选最优）。
+    pub profiles: Vec<Profile>,
     /// 端口权重（越高越适合作为默认）。
     pub priority: u32,
 }
@@ -34,10 +34,18 @@ pub struct PortInfo {
 impl PortInfo {
     /// 选择该端口最合适的 profile。
     ///
-    /// 当前返回第一个可用的 profile 名称。
-    /// TODO: 按 profile 优先级/蓝牙模式选择最优。
+    /// 对齐 Go 版 `ProfileInfos2.SelectProfile`：
+    /// 可用（available）的 profile 中选 priority 最高者；无可用则取第一个。
     pub fn select_profile(&self) -> Option<&str> {
-        self.profiles.first().map(|s| s.as_str())
+        let best = self
+            .profiles
+            .iter()
+            .filter(|p| p.available)
+            .max_by_key(|p| p.priority);
+        match best {
+            Some(p) => Some(p.name.as_str()),
+            None => self.profiles.first().map(|p| p.name.as_str()),
+        }
     }
 }
 /// 声卡支持的 profile。
@@ -49,6 +57,17 @@ pub struct Profile {
     pub priority: u32,
     /// 是否可用（unavailable 的 profile 无意义）。
     pub available: bool,
+}
+
+impl From<crate::backend::pulse::card::BackendCardProfile> for Profile {
+    fn from(p: crate::backend::pulse::card::BackendCardProfile) -> Self {
+        Self {
+            name: p.name,
+            description: p.description,
+            priority: p.priority,
+            available: p.available,
+        }
+    }
 }
 /// 声卡（Card）状态。
 ///
@@ -83,19 +102,11 @@ impl From<crate::backend::pulse::card::BackendCard> for Card {
                     bluetooth: false,
                     description: p.description,
                     direction: p.direction,
-                    profiles: p.profiles,
+                    profiles: p.profiles.into_iter().map(Profile::from).collect(),
                     priority: p.priority,
                 })
                 .collect(),
-            profiles: b.profiles
-                .into_iter()
-                .map(|p| Profile {
-                    name: p.name,
-                    description: p.description,
-                    priority: p.priority,
-                    available: p.available,
-                })
-                .collect(),
+            profiles: b.profiles.into_iter().map(Profile::from).collect(),
             status: CardStatus::Ready,
             change: None,
         }
