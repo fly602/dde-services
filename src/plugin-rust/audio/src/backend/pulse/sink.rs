@@ -189,6 +189,8 @@ pub struct BackendPort {
     pub name: String,
     pub description: String,
     pub direction: u32,
+    /// 端口可用性（0=Unknown, 1=NotAvailable, 2=Available，对齐 Go AvailableType）。
+    pub available: u8,
 }
 
 /// Sink 信息（backend 表示，与 manager 解耦）。
@@ -254,7 +256,6 @@ pub fn query_list(pulse: &PulseManager) -> Result<Vec<BackendSink>, String> {
         true
     })
 }
-
 fn state_from_info(info: &libpulse_binding::context::introspect::SinkInfo) -> BackendSink {
     let ports = info
         .ports
@@ -263,6 +264,7 @@ fn state_from_info(info: &libpulse_binding::context::introspect::SinkInfo) -> Ba
             name: p.name.as_deref().unwrap_or("").to_owned(),
             description: p.description.as_deref().unwrap_or("").to_owned(),
             direction: 1, // sink 方向固定为输出（D-Bus 契约：1=输出）
+            available: p.available as u8,
         })
         .collect();
 
@@ -270,10 +272,12 @@ fn state_from_info(info: &libpulse_binding::context::introspect::SinkInfo) -> Ba
         name: p.name.as_deref().unwrap_or("").to_owned(),
         description: p.description.as_deref().unwrap_or("").to_owned(),
         direction: 1,
+        available: p.available as u8,
     }).unwrap_or_else(|| BackendPort {
         name: String::new(),
         description: String::new(),
         direction: 1,
+        available: 0,
     });
 
     let vol = info.volume.avg();

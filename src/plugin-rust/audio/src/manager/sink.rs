@@ -23,6 +23,8 @@ pub struct Port {
     pub name: String,
     pub description: String,
     pub direction: u32,
+    /// 端口可用性（0=Unknown, 1=NotAvailable, 2=Available）。
+    pub available: u8,
 }
 
 /// Sink（输出设备）状态。
@@ -49,6 +51,7 @@ impl From<crate::backend::pulse::sink::BackendSink> for Sink {
             name: p.name,
             description: p.description,
             direction: p.direction,
+            available: p.available,
         };
         Self {
             index: b.index,
@@ -205,6 +208,14 @@ impl SinkInterface {
     #[zbus(property)]
     pub fn support_fade(&self) -> bool {
         self.state().map(|s| s.support_fade).unwrap_or_default()
+    }
+
+
+    #[zbus(property)]
+    pub fn active_port(&self) -> (String, String, u8) {
+        self.state()
+            .map(|s| (s.active_port.name, s.active_port.description, s.active_port.available))
+            .unwrap_or_default()
     }
 
     #[zbus(property)]

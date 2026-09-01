@@ -145,7 +145,7 @@ impl Audio {
         self.manager.audio_server_state()
     }
 
-    #[zbus(property)]
+    #[zbus(property, name = "MaxUIVolume")]
     pub fn max_ui_volume(&self) -> f64 {
         self.manager.max_ui_volume()
     }
@@ -155,6 +155,41 @@ impl Audio {
         self.manager.mono()
     }
 
+    #[zbus(property)]
+    pub fn increase_volume(&self) -> bool {
+        self.manager.increase_volume()
+    }
+
+    #[zbus(property)]
+    pub fn reduce_noise(&self) -> bool {
+        self.manager.reduce_noise()
+    }
+
+    #[zbus(property)]
+    pub fn pause_player(&self) -> bool {
+        self.manager.pause_player()
+    }
+
+    #[zbus(property)]
+    pub fn set_increase_volume(&self, enable: bool) -> zbus::fdo::Result<()> {
+        self.manager
+            .set_increase_volume(enable)
+            .map_err(|e| zbus::fdo::Error::Failed(e))
+    }
+
+    #[zbus(property)]
+    pub fn set_reduce_noise(&self, enable: bool) -> zbus::fdo::Result<()> {
+        self.manager
+            .set_reduce_noise(enable)
+            .map_err(|e| zbus::fdo::Error::Failed(e))
+    }
+
+    #[zbus(property)]
+    pub fn set_pause_player(&self, enable: bool) -> zbus::fdo::Result<()> {
+        self.manager
+            .set_pause_player(enable)
+            .map_err(|e| zbus::fdo::Error::Failed(e))
+    }
     // ========== 方法 ==========
 
     fn is_port_enabled(&self, card_id: u32, port_name: &str) -> zbus::fdo::Result<bool> {
@@ -179,7 +214,9 @@ impl Audio {
             .map_err(|e| zbus::fdo::Error::Failed(e))
     }
 
-    fn set_port(&self, card_id: u32, port_name: &str, direction: u32) -> zbus::fdo::Result<()> {
+    fn set_port(&self, card_id: u32, port_name: &str, direction: i32) -> zbus::fdo::Result<()> {
+        // 控制中心/Go 原版方向参数为 int32（D-Bus 签名 i），内部统一按 u32 处理。
+        let direction = direction as u32;
         self.manager
             .set_port(card_id, port_name, direction)
             .map_err(|e| zbus::fdo::Error::Failed(e))

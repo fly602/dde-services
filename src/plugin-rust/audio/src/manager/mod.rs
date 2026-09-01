@@ -51,13 +51,19 @@ pub const DBUS_PATH: &str = "/org/deepin/dde/Audio1";
 /// Sink/Source/SinkInput 子接口通过 `Arc<RwLock<DeviceManager>>` 读取状态，
 /// 通过 `Arc<PulseManager>` 调用底层操作。
 pub struct AudioManager {
-    pulse: Arc<PulseManager>,
-    device_manager: Arc<RwLock<DeviceManager>>,
-    connection: zbus::blocking::Connection,
+    /// 事件循环线程（Drop 时 join 事件+worker 线程）。
+    /// 必须在 pulse/connection 之前析构：事件线程持有它们的 Arc 克隆，
+    /// 若先析构 pulse/connection，事件线程将访问已释放内存（SIGSEGV）。
     #[allow(dead_code)]
     event_loop: event_loop::EventLoop,
-    /// 端口设置/优先级切换协调器。
+    /// 端口协调器（Drop 时 join executor 线程），同上前置。
     coordinator: coordinator::SwitchCoordinator,
+    /// PulseAudio 连接（事件线程 join 后释放）。
+    pulse: Arc<PulseManager>,
+    /// D-Bus 连接（线程全部 join 后释放）。
+    connection: zbus::blocking::Connection,
+    /// 设备状态内存存储。
+    device_manager: Arc<RwLock<DeviceManager>>,
     /// 配置持久化。
     config: AudioConfig,
     /// 事件循环回调用的自身弱引用槽（lib.rs 在 Arc 创建后写入）。
@@ -68,6 +74,20 @@ pub struct AudioManager {
     dconfig_watch: Option<std::thread::JoinHandle<()>>,
     /// 单声道开关状态。
     mono: std::sync::atomic::AtomicBool,
+    /// 音量增强开关（true 时 MaxUIVolume=1.5）。
+    increase_volume: std::sync::atomic::AtomicBool,
+    /// 降噪开关（加载 module-echo-cancel）。
+    reduce_noise: std::sync::atomic::AtomicBool,
+    /// 插拔暂停播放开关（经 MPRIS 暂停播放器）。
+    pause_player: std::sync::atomic::AtomicBool,
+    /// dconfig 系统总线连接（bool 键读写复用）。
+    dconfig_conn: Option<zbus::blocking::Connection>,
+    /// 当前音频服务器名（启动时探测，pulseaudio/pipewire）。
+    current_audio_server: RwLock<String>,
+    /// 音频服务器切换状态（true=已就绪，false=切换中）。
+    audio_server_state: std::sync::atomic::AtomicBool,
+    /// 阻止 pulse 重启标志（SetCurrentAudioServer/StopAudioService 用）。
+    no_restart_pulse_audio: std::sync::atomic::AtomicBool,
 }
 
 impl AudioManager {
@@ -113,8 +133,15 @@ impl AudioManager {
         // dconfig 类型优先级：
         // 1) 启动一次性读取应用到内存策略
         // 2) 订阅 valueChanged，变更时经 weak slot 重应用
+        // 3) 读取三个开关初值（音量增强/降噪/插拔暂停）
         let mut dconfig_watch = None;
+        let mut dconfig_conn = None;
+        let mut init_increase = false;
+        let mut init_reduce_noise = false;
+        let mut init_pause_player = false;
+        let mut init_mono = false;
         if let Ok(dconn) = zbus::blocking::Connection::system() {
+            dconfig_conn = Some(dconn.clone());
             match dconfig::load_type_order(&dconn) {
                 Ok(cfg) => {
                     let mut dm = device_manager.write();
@@ -124,6 +151,13 @@ impl AudioManager {
                 }
                 Err(e) => eprintln!("[dde-audio] dconfig load failed (using defaults): {e}"),
             }
+            init_increase = dconfig::load_bool(&dconn, dconfig::KEY_VOLUME_INCREASE)
+                .unwrap_or(false);
+            init_reduce_noise = dconfig::load_bool(&dconn, dconfig::KEY_REDUCE_NOISE)
+                .unwrap_or(false);
+            init_pause_player = dconfig::load_bool(&dconn, dconfig::KEY_PAUSE_PLAYER)
+                .unwrap_or(false);
+            init_mono = dconfig::load_bool(&dconn, dconfig::KEY_MONO).unwrap_or(false);
             // 监听回调：经 manager 弱引用升级后应用（new 返回后 slot 才写入）
             let slot_watch = manager_slot.clone();
             let apply = Arc::new(move |cfg: dconfig::TypeOrderConfig| {
@@ -155,7 +189,9 @@ impl AudioManager {
                 }
             });
 
-        Ok(Self {
+        let current_server = detect_current_audio_server();
+        eprintln!("[dde-audio] current audio server: {current_server}");
+        let mgr = Self {
             pulse,
             device_manager,
             connection,
@@ -164,8 +200,18 @@ impl AudioManager {
             config,
             manager_slot,
             dconfig_watch,
-            mono: std::sync::atomic::AtomicBool::new(false),
-        })
+            mono: std::sync::atomic::AtomicBool::new(init_mono),
+            increase_volume: std::sync::atomic::AtomicBool::new(init_increase),
+            reduce_noise: std::sync::atomic::AtomicBool::new(init_reduce_noise),
+            pause_player: std::sync::atomic::AtomicBool::new(init_pause_player),
+            dconfig_conn,
+            current_audio_server: RwLock::new(current_server),
+            audio_server_state: std::sync::atomic::AtomicBool::new(true),
+            no_restart_pulse_audio: std::sync::atomic::AtomicBool::new(false),
+        };
+        // 恢复 dconfig 持久化的模块状态（mono/降噪）
+        mgr.restore_module_states();
+        Ok(mgr)
     }
 
     /// 应用 dconfig 提供的类型优先级顺序到内存策略（不落本地文件）。
@@ -247,18 +293,59 @@ impl AudioManager {
         Vec::new()
     }
     pub fn current_audio_server(&self) -> String {
-        "pulseaudio".to_owned()
+        self.current_audio_server.read().clone()
     }
     pub fn audio_server_state(&self) -> bool {
-        true
+        use std::sync::atomic::Ordering;
+        self.audio_server_state.load(Ordering::SeqCst)
+    }
+    /// 发送 Audio 主接口的属性变更信号（带值 changed map，DTK 可识别）。
+    fn emit_audio_prop(&self, name: &str, value: zbus::zvariant::Value<'_>) {
+        let path: zbus::zvariant::ObjectPath = match DBUS_PATH.try_into() {
+            Ok(p) => p,
+            Err(_) => return,
+        };
+        let iface: zbus::names::InterfaceName = match "org.deepin.dde.Audio1".try_into() {
+            Ok(n) => n,
+            Err(_) => return,
+        };
+        let changed = std::collections::HashMap::from([(name, value)]);
+        let body = (iface, changed, Vec::<&str>::new());
+        let _ = self.connection.emit_signal(
+            None::<&str>,
+            path,
+            "org.freedesktop.DBus.Properties",
+            "PropertiesChanged",
+            &body,
+        );
     }
     pub fn max_ui_volume(&self) -> f64 {
-        1.0
+        use std::sync::atomic::Ordering;
+        if self.increase_volume.load(Ordering::SeqCst) {
+            1.5
+        } else {
+            1.0
+        }
     }
     /// 单声道是否开启。
     pub fn mono(&self) -> bool {
         use std::sync::atomic::Ordering;
         self.mono.load(Ordering::SeqCst)
+    }
+    /// 音量增强是否开启。
+    pub fn increase_volume(&self) -> bool {
+        use std::sync::atomic::Ordering;
+        self.increase_volume.load(Ordering::SeqCst)
+    }
+    /// 降噪是否开启。
+    pub fn reduce_noise(&self) -> bool {
+        use std::sync::atomic::Ordering;
+        self.reduce_noise.load(Ordering::SeqCst)
+    }
+    /// 插拔暂停播放是否开启。
+    pub fn pause_player(&self) -> bool {
+        use std::sync::atomic::Ordering;
+        self.pause_player.load(Ordering::SeqCst)
     }
 
     // ===== Audio 级别方法（后续实现） =====
@@ -266,17 +353,45 @@ impl AudioManager {
     pub fn set_bluetooth_audio_mode(&self, _mode: &str) -> Result<(), String> {
         Err("unimplemented".into())
     }
-    /// 开启/关闭单声道。
+    /// 开启/关闭单声道（内存 + dconfig 持久化 + 加载/卸载 remap-sink 模块）。
     ///
     /// 开启：加载 `module-remap-sink` 创建 mono-sink（master 绑定当前
     /// 物理默认 sink），并设为默认输出；关闭：卸载 mono 模块，恢复默认。
     pub fn set_mono(&self, enable: bool) -> Result<(), String> {
-        use crate::backend::pulse::module::{MODULE_REMAP_SINK, MONO_SINK_NAME};
         use std::sync::atomic::Ordering;
 
         if self.mono.load(Ordering::SeqCst) == enable {
             return Ok(());
         }
+
+        self.apply_mono(enable)?;
+        self.mono.store(enable, Ordering::SeqCst);
+        if let Some(conn) = &self.dconfig_conn {
+            let _ = dconfig::set_bool(conn, dconfig::KEY_MONO, enable);
+        }
+        Ok(())
+    }
+
+    /// 启动时恢复 mono/reduce_noise 模块状态（dconfig 初值已载入 flag 后调用）。
+    ///
+    /// 模块状态在 pulse 重启后丢失，需按持久化开关重新加载。
+    pub fn restore_module_states(&self) {
+        use std::sync::atomic::Ordering;
+        if self.mono.load(Ordering::SeqCst) {
+            if let Err(e) = self.apply_mono(true) {
+                eprintln!("[dde-audio] restore mono failed: {e}");
+            }
+        }
+        if self.reduce_noise.load(Ordering::SeqCst) {
+            if let Err(e) = self.apply_reduce_noise(true) {
+                eprintln!("[dde-audio] restore reduce noise failed: {e}");
+            }
+        }
+    }
+
+    /// 应用 mono 模块状态（不写 flag/dconfig，供 set 与启动恢复共用）。
+    fn apply_mono(&self, enable: bool) -> Result<(), String> {
+        use crate::backend::pulse::module::{MODULE_REMAP_SINK, MONO_SINK_NAME};
 
         if enable {
             // 取当前默认 sink 作为 mono 的 master（物理设备）
@@ -284,7 +399,6 @@ impl AudioManager {
             if default_sink.is_empty() || default_sink == MONO_SINK_NAME {
                 return Err("no physical default sink for mono".into());
             }
-            // 加载 remap-sink 模块（参数在 module_argument 中编排）
             load_module(
                 &self.pulse,
                 &self.device_manager,
@@ -292,14 +406,11 @@ impl AudioManager {
                 Some(&default_sink),
                 None,
             )?;
-            // mono-sink 设为默认输出
             self.pulse.set_default_sink(MONO_SINK_NAME)?;
             eprintln!("[dde-audio] mono enabled (master {default_sink})");
         } else {
-            // 卸载 mono 模块：先查索引再卸载
             if let Some(index) = find_module_index(&self.pulse, MODULE_REMAP_SINK)? {
                 self.pulse.unload_module(index)?;
-                // 恢复默认 sink 为物理设备
                 let (default_sink, _) = self.pulse.default_sink_source()?;
                 if default_sink != MONO_SINK_NAME && !default_sink.is_empty() {
                     self.pulse.set_default_sink(&default_sink)?;
@@ -307,8 +418,78 @@ impl AudioManager {
             }
             eprintln!("[dde-audio] mono disabled");
         }
+        Ok(())
+     }
 
-        self.mono.store(enable, Ordering::SeqCst);
+    /// 设置音量增强开关（内存 + dconfig 持久化）。
+    ///
+    /// 开启时 `MaxUIVolume` 从 1.0 提到 1.5（与 Go 版 increaseMaxVolume 一致）。
+    /// 属性变更信号由 zbus 的 setter 自动发出（带值 changed map）。
+    pub fn set_increase_volume(&self, enable: bool) -> Result<(), String> {
+        use std::sync::atomic::Ordering;
+        self.increase_volume.store(enable, Ordering::SeqCst);
+        if let Some(conn) = &self.dconfig_conn {
+            let _ = dconfig::set_bool(conn, dconfig::KEY_VOLUME_INCREASE, enable);
+        }
+        eprintln!("[dde-audio] increase volume set to {enable}");
+        Ok(())
+    }
+
+    /// 设置降噪开关（内存 + dconfig 持久化 + 加载/卸载 echo-cancel 模块）。
+    ///
+    /// 开启：加载 `module-echo-cancel`（source_master 绑定当前默认 source）；
+    /// 关闭：卸载该模块。
+    pub fn set_reduce_noise(&self, enable: bool) -> Result<(), String> {
+        use std::sync::atomic::Ordering;
+
+        if self.reduce_noise.load(Ordering::SeqCst) == enable {
+            return Ok(());
+        }
+
+        self.apply_reduce_noise(enable)?;
+        self.reduce_noise.store(enable, Ordering::SeqCst);
+        if let Some(conn) = &self.dconfig_conn {
+            let _ = dconfig::set_bool(conn, dconfig::KEY_REDUCE_NOISE, enable);
+        }
+        Ok(())
+    }
+
+    /// 应用降噪模块状态（不写 flag/dconfig，供 set 与启动恢复共用）。
+    fn apply_reduce_noise(&self, enable: bool) -> Result<(), String> {
+        use crate::backend::pulse::module::MODULE_ECHO_CANCEL;
+
+        if enable {
+            // 取当前默认 source 作为 echo-cancel 的 master（物理设备）
+            let (_, default_source) = self.pulse.default_sink_source()?;
+            if default_source.is_empty() {
+                return Err("no physical default source for reduce noise".into());
+            }
+            load_module(
+                &self.pulse,
+                &self.device_manager,
+                MODULE_ECHO_CANCEL,
+                Some(&default_source),
+                None,
+            )?;
+            eprintln!("[dde-audio] reduce noise enabled (master {default_source})");
+        } else {
+            // 卸载 echo-cancel 模块
+            if let Some(index) = find_module_index(&self.pulse, MODULE_ECHO_CANCEL)? {
+                self.pulse.unload_module(index)?;
+            }
+            eprintln!("[dde-audio] reduce noise disabled");
+        }
+        Ok(())
+    }
+
+    /// 设置插拔暂停播放开关（内存 + dconfig 持久化）。
+    pub fn set_pause_player(&self, enable: bool) -> Result<(), String> {
+        use std::sync::atomic::Ordering;
+        self.pause_player.store(enable, Ordering::SeqCst);
+        if let Some(conn) = &self.dconfig_conn {
+            let _ = dconfig::set_bool(conn, dconfig::KEY_PAUSE_PLAYER, enable);
+        }
+        eprintln!("[dde-audio] pause player set to {enable}");
         Ok(())
     }
     /// 设置声卡端口。
@@ -479,17 +660,174 @@ impl AudioManager {
     pub fn is_port_enabled(&self, card_id: u32, port_name: &str) -> Result<bool, String> {
         Ok(self.device_manager.read().is_port_enabled(card_id, port_name))
     }
-    pub fn set_current_audio_server(&self, _server_name: &str) -> Result<(), String> {
-        Err("unimplemented".into())
+    /// 切换当前音频服务器（pulseaudio/pipewire）。
+    ///
+    /// 对齐 Go 版：置切换中状态 → unmask 目标服务组 + mask 旧服务组 →
+    /// daemon-reload → 恢复就绪状态并发属性信号。切换需注销后重新登录生效。
+    pub fn set_current_audio_server(&self, server_name: &str) -> Result<(), String> {
+        use std::sync::atomic::Ordering;
+        use std::process::Command;
+
+        const PULSEAUDIO_UNITS: [&str; 2] = ["pulseaudio.service", "pulseaudio.socket"];
+        const PIPEWIRE_UNITS: [&str; 4] = [
+            "pipewire.service",
+            "pipewire-pulse.service",
+            "pipewire.socket",
+            "pipewire-pulse.socket",
+        ];
+
+        if server_name != "pulseaudio" && server_name != "pipewire" {
+            return Err(format!("unsupported audio server: {server_name}"));
+        }
+        let old = self.current_audio_server();
+        if old == server_name {
+            return Ok(());
+        }
+
+        let (active, deactive) = if server_name == "pulseaudio" {
+            (PULSEAUDIO_UNITS.as_slice(), PIPEWIRE_UNITS.as_slice())
+        } else {
+            (PIPEWIRE_UNITS.as_slice(), PULSEAUDIO_UNITS.as_slice())
+        };
+
+        // 置切换中状态并通知
+        self.audio_server_state.store(false, Ordering::SeqCst);
+        self.emit_audio_prop("AudioServerState", zbus::zvariant::Value::from(false));
+        self.emit_audio_prop(
+            "CurrentAudioServer",
+            zbus::zvariant::Value::from(server_name.to_owned()),
+        );
+
+        let systemctl = |args: &[&str]| -> Result<(), String> {
+            let out = Command::new("systemctl")
+                .arg("--user")
+                .args(args)
+                .output()
+                .map_err(|e| format!("systemctl failed: {e}"))?;
+            if !out.status.success() {
+                return Err(format!(
+                    "systemctl {:?} failed: {}",
+                    args,
+                    String::from_utf8_lossy(&out.stderr)
+                ));
+            }
+            Ok(())
+        };
+
+        // 失败回滚：恢复旧服务器状态
+        let fail = |mgr: &Self, err: String| -> Result<(), String> {
+            mgr.audio_server_state.store(true, Ordering::SeqCst);
+            mgr.emit_audio_prop("AudioServerState", zbus::zvariant::Value::from(true));
+            Err(err)
+        };
+
+        // unmask 目标服务组
+        let mut unmask_args = vec!["unmask"];
+        unmask_args.extend_from_slice(active);
+        if let Err(e) = systemctl(&unmask_args) {
+            return fail(self, e);
+        }
+
+        // mask 旧服务组
+        let mut mask_args = vec!["mask"];
+        mask_args.extend_from_slice(deactive);
+        if let Err(e) = systemctl(&mask_args) {
+            return fail(self, e);
+        }
+
+        // 重载 systemd 单元
+        if let Err(e) = systemctl(&["daemon-reload"]) {
+            return fail(self, e);
+        }
+
+        // 更新缓存并恢复就绪状态
+        *self.current_audio_server.write() = server_name.to_owned();
+        self.audio_server_state.store(true, Ordering::SeqCst);
+        self.emit_audio_prop("AudioServerState", zbus::zvariant::Value::from(true));
+        eprintln!(
+            "[dde-audio] audio server switched: {old} -> {server_name} (log out required)"
+        );
+        Ok(())
     }
     pub fn stop_audio_service(&self) -> Result<(), String> {
         Err("unimplemented".into())
     }
+    /// 重置音频配置：恢复默认音量/平衡/淡入（对齐 Go 版 Reset）。
+    ///
+    /// 遍历所有 sink/source，逐端口设置默认音量后恢复原端口；
+    /// 源端音量恢复默认输入音量。
     pub fn reset(&self) -> Result<(), String> {
-        Err("unimplemented".into())
+        use crate::backend::pulse::{sink as pulse_sink, source as pulse_source};
+        use std::thread;
+        use std::time::Duration;
+
+        const DEFAULT_OUTPUT: f64 = 0.5;
+        const DEFAULT_HEADPHONE: f64 = 0.17;
+        const DEFAULT_INPUT: f64 = 0.1;
+
+        // 重置输出：逐端口设默认音量后恢复原端口
+        for s in pulse_sink::query_list(&self.pulse)? {
+            let sidx = s.index;
+            let _ = pulse_sink::set_mute(&self.pulse, sidx, false);
+            let cur_port = s.active_port.name.clone();
+            for port in &s.ports {
+                let _ = pulse_sink::set_port(&self.pulse, sidx, &port.name);
+                thread::sleep(Duration::from_millis(100));
+                let pname = port.name.to_lowercase();
+                let vol = if pname.contains("headphone") || pname.contains("headset") {
+                    DEFAULT_HEADPHONE
+                } else {
+                    DEFAULT_OUTPUT
+                };
+                let _ = pulse_sink::set_volume(&self.pulse, sidx, vol, false);
+                let _ = pulse_sink::set_balance(&self.pulse, sidx, 0.0, false);
+                let _ = pulse_sink::set_fade(&self.pulse, sidx, 0.0);
+                thread::sleep(Duration::from_millis(100));
+            }
+            if !cur_port.is_empty() {
+                let _ = pulse_sink::set_port(&self.pulse, sidx, &cur_port);
+            }
+        }
+
+        // 重置输入：默认输入音量 + 平衡/淡入清零
+        for s in pulse_source::query_list(&self.pulse)? {
+            if !s.active_port.name.is_empty() {
+                let _ = pulse_source::set_mute(&self.pulse, s.index, false);
+                let _ = pulse_source::set_volume(&self.pulse, s.index, DEFAULT_INPUT, false);
+                let _ = pulse_source::set_balance(&self.pulse, s.index, 0.0, false);
+                let _ = pulse_source::set_fade(&self.pulse, s.index, 0.0);
+            }
+        }
+
+        eprintln!("[dde-audio] reset audio config done");
+        Ok(())
     }
     pub fn no_restart_pulse_audio(&self) -> Result<(), String> {
-        Err("unimplemented".into())
+        use std::sync::atomic::Ordering;
+        self.no_restart_pulse_audio.store(true, Ordering::SeqCst);
+        eprintln!("[dde-audio] no_restart_pulse_audio set");
+        Ok(())
+    }
+}
+
+/// 探测当前音频服务器（pulseaudio/pipewire）。
+///
+/// 通过 systemd 用户单元状态判断（与 Go 版 getCurrentAudioServer 一致）：
+/// pipewire-pulse 优先（现代系统默认），回退检查 pulseaudio。
+fn detect_current_audio_server() -> String {
+    fn unit_active(unit: &str) -> bool {
+        std::process::Command::new("systemctl")
+            .args(["--user", "is-active", unit])
+            .output()
+            .map(|o| String::from_utf8_lossy(&o.stdout).trim() == "active")
+            .unwrap_or(false)
+    }
+    if unit_active("pipewire-pulse.service") {
+        "pipewire".to_owned()
+    } else if unit_active("pulseaudio.service") {
+        "pulseaudio".to_owned()
+    } else {
+        String::new()
     }
 }
 

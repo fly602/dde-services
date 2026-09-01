@@ -134,6 +134,8 @@ struct State {
 /// 协调器：单 executor 线程 + 任务队列。
 pub struct SwitchCoordinator {
     shared: Arc<ExecutorShared>,
+    /// 关闭信号（Drop 时置位，executor 轮询退出）。
+    shutdown: Arc<std::sync::atomic::AtomicBool>,
     /// executor 线程句柄。
     #[allow(dead_code)]
     executor: Option<thread::JoinHandle<()>>,
@@ -154,12 +156,15 @@ impl SwitchCoordinator {
             }),
             queue_cond: Condvar::new(),
         });
+        let shutdown = Arc::new(AtomicBool::new(false));
         let sh = shared.clone();
+        let sh_down = shutdown.clone();
         let handler_clone = handler.clone();
-        let executor = thread::spawn(move || Self::run_executor(sh, handler_clone));
+        let executor = thread::spawn(move || Self::run_executor(sh, sh_down, handler_clone));
 
         Self {
             shared,
+            shutdown,
             executor: Some(executor),
         }
     }
@@ -167,17 +172,23 @@ impl SwitchCoordinator {
     /// executor 主循环：串行消费队列。
     fn run_executor(
         shared: Arc<ExecutorShared>,
+        shutdown: Arc<AtomicBool>,
         handler: Arc<dyn Fn(TaskOp, &AtomicBool) -> Result<(), String> + Send + Sync>,
     ) {
         loop {
-            // 取队首任务；队列空则阻塞等
+            // 取队首任务；队列空则阻塞等（带超时以响应关闭信号）
             let task = {
                 let mut st = shared.state.lock();
                 loop {
+                    if shutdown.load(Ordering::SeqCst) {
+                        return;
+                    }
                     if let Some(t) = st.queue.pop_front() {
                         break Some(t);
                     }
-                    shared.queue_cond.wait(&mut st);
+                    let _r = shared
+                        .queue_cond
+                        .wait_for(&mut st, std::time::Duration::from_millis(100));
                 }
             };
             let task = match task {
@@ -282,10 +293,11 @@ impl SwitchCoordinator {
 
 impl Drop for SwitchCoordinator {
     fn drop(&mut self) {
-        // executor 是常驻线程（等空队列），不 join（协调器随 AudioManager
-        // 生命周期存在，进程退出由框架收尾）。
+        use std::sync::atomic::Ordering as AtOrder;
+        self.shutdown.store(true, AtOrder::SeqCst);
+        self.shared.queue_cond.notify_all();
         if let Some(h) = self.executor.take() {
-            let _ = h;
+            let _ = h.join();
         }
     }
 }

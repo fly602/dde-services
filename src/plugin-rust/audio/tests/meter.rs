@@ -86,6 +86,7 @@ fn volume_fallback_to_sink_state() {
                 name: String::new(),
                 description: String::new(),
                 direction: 1,
+                available: 0,
             },
             card: 1,
         },

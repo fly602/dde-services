@@ -41,6 +41,7 @@ impl From<crate::backend::pulse::source::BackendSource> for Source {
             name: p.name,
             description: p.description,
             direction: p.direction,
+            available: p.available,
         };
         Self {
             index: b.index,
@@ -197,6 +198,13 @@ impl SourceInterface {
     #[zbus(property)]
     pub fn card(&self) -> u32 {
         self.state().map(|s| s.card).unwrap_or_default()
+    }
+
+    #[zbus(property)]
+    pub fn active_port(&self) -> (String, String, u8) {
+        self.state()
+            .map(|s| (s.active_port.name, s.active_port.description, s.active_port.available))
+            .unwrap_or_default()
     }
 
     // ========== 方法 ==========

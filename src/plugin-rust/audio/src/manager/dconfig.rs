@@ -33,6 +33,14 @@ const DCONFIG_MODULE: &str = "org.deepin.dde.daemon.audio";
 /// 类型优先级键。
 const KEY_OUTPUT: &str = "outputDefaultPrioritiesByType";
 const KEY_INPUT: &str = "inputDefaultPrioritiesByType";
+/// 音量增强键（开启时 MaxUIVolume=1.5）。
+pub const KEY_VOLUME_INCREASE: &str = "volumeIncrease";
+/// 降噪开关键。
+pub const KEY_REDUCE_NOISE: &str = "reduceNoiseEnabled";
+/// 插拔暂停播放键。
+pub const KEY_PAUSE_PLAYER: &str = "pausePlayer";
+/// 单声道开关键。
+pub const KEY_MONO: &str = "monoEnabled";
 /// Manager 接口名。
 const MANAGER_IFACE: &str = "org.desktopspec.ConfigManager.Manager";
 /// 根接口名。
@@ -116,6 +124,35 @@ pub fn load_type_order(conn: &Connection) -> Result<TypeOrderConfig, String> {
         output: read_type_order(conn, &manager_path, KEY_OUTPUT)?,
         input: read_type_order(conn, &manager_path, KEY_INPUT)?,
     })
+}
+
+/// 读取单个 bool 配置值。
+///
+/// 失败说明 dconfig 不可用或配置非法，调用方应静默回退默认值。
+pub fn load_bool(conn: &Connection, key: &str) -> Result<bool, String> {
+    let manager_path = acquire_manager(conn)?;
+    let proxy = build_proxy(conn, manager_path.as_str(), MANAGER_IFACE)?;
+    let msg = proxy
+        .call_method("value", &(key,))
+        .map_err(|e| format!("dconfig value({key}): {e}"))?;
+    let v: OwnedValue = msg
+        .body()
+        .deserialize()
+        .map_err(|e| format!("dconfig value({key}) decode: {e}"))?;
+    bool::try_from(v).map_err(|e| format!("dconfig value({key}) not bool: {e}"))
+}
+
+/// 写入单个 bool 配置值。
+pub fn set_bool(conn: &Connection, key: &str, value: bool) -> Result<(), String> {
+    let manager_path = acquire_manager(conn)?;
+    let proxy = build_proxy(conn, manager_path.as_str(), MANAGER_IFACE)?;
+    // dconfig setValue 签名是 sv（第二个参数为 variant），需用 OwnedValue 包裹
+    let wrapped: OwnedValue = OwnedValue::try_from(zbus::zvariant::Value::from(value))
+        .map_err(|e| format!("dconfig setValue({key}) wrap: {e}"))?;
+    proxy
+        .call_method("setValue", &(key, wrapped))
+        .map_err(|e| format!("dconfig setValue({key}): {e}"))?;
+    Ok(())
 }
 
 /// 订阅 manager 的 `valueChanged` 信号并回调。
