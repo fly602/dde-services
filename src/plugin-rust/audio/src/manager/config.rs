@@ -30,6 +30,16 @@ const CONFIG_FILE: &str = "deepin/dde-daemon/audio-config.json";
 /// 全部字段带 `#[serde(default)]`，保证旧版本配置缺字段时仍可解析。
 #[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 pub struct PersistData {
+    /// 输出静音（全局）。
+    #[serde(default)]
+    pub mute_output: bool,
+    /// 输入静音（全局）。
+    #[serde(default)]
+    pub mute_input: bool,
+    /// 端口音量与平衡：卡名 → 端口名 → (volume, balance)。
+    /// 与 Go 版 ConfigKeeper 对齐，端口切换/重启后恢复。
+    #[serde(default)]
+    pub port_state: BTreeMap<String, BTreeMap<String, PortState>>,
     /// 用户禁用的端口：卡名 → 端口名列表。
     #[serde(default)]
     pub disabled_ports: BTreeMap<String, Vec<String>>,
@@ -45,6 +55,21 @@ pub struct PersistData {
     /// 输入方向类型优先级顺序（PortType 的 u32 编码，前=高）。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub type_order_input: Option<Vec<u32>>,
+}
+
+/// 单个端口的音量/平衡持久化状态。
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct PortState {
+    /// 相对音量（0.0~1.0，UI 值）。
+    pub volume: f64,
+    /// 左右平衡（-1.0~1.0）。
+    pub balance: f64,
+}
+
+impl Default for PortState {
+    fn default() -> Self {
+        Self { volume: 0.5, balance: 0.0 }
+    }
 }
 
 /// 音频配置：内存态 + 文件路径。
@@ -182,6 +207,59 @@ impl AudioConfig {
         }
         drop(data);
         self.save();
+    }
+
+    /// 设置全局静音（内存 + 持久化）。
+    /// `is_input` 为 true 表示输入静音，false 表示输出静音。
+    pub fn set_mute(&self, is_input: bool, mute: bool) {
+        let mut data = self.data.write();
+        if is_input {
+            data.mute_input = mute;
+        } else {
+            data.mute_output = mute;
+        }
+        drop(data);
+        self.save();
+    }
+
+    /// 读取全局静音状态。
+    pub fn mute(&self, is_input: bool) -> bool {
+        let data = self.data.read();
+        if is_input {
+            data.mute_input
+        } else {
+            data.mute_output
+        }
+    }
+
+    /// 设置端口音量（内存 + 持久化）。
+    pub fn set_port_volume(&self, card_name: &str, port_name: &str, volume: f64) {
+        let mut data = self.data.write();
+        let ports = data.port_state.entry(card_name.to_owned()).or_default();
+        let st = ports.entry(port_name.to_owned()).or_default();
+        st.volume = volume;
+        drop(data);
+        self.save();
+    }
+
+    /// 设置端口平衡（内存 + 持久化）。
+    pub fn set_port_balance(&self, card_name: &str, port_name: &str, balance: f64) {
+        let mut data = self.data.write();
+        let ports = data.port_state.entry(card_name.to_owned()).or_default();
+        let st = ports.entry(port_name.to_owned()).or_default();
+        st.balance = balance;
+        drop(data);
+        self.save();
+    }
+
+    /// 读取端口持久化状态（无则默认）。
+    pub fn port_state(&self, card_name: &str, port_name: &str) -> PortState {
+        let data = self.data.read();
+        data.port_state
+            .get(card_name)
+            .and_then(|m| m.get(port_name))
+            .cloned()
+            .unwrap_or_default()
     }
     /// 将持久化配置应用到 DeviceManager（启动时调用）。
     ///

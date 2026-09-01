@@ -65,7 +65,7 @@ pub struct AudioManager {
     /// 设备状态内存存储。
     device_manager: Arc<RwLock<DeviceManager>>,
     /// 配置持久化。
-    config: AudioConfig,
+    config: Arc<AudioConfig>,
     /// 事件循环回调用的自身弱引用槽（lib.rs 在 Arc 创建后写入）。
     #[allow(dead_code)]
     manager_slot: std::sync::Arc<parking_lot::RwLock<Option<std::sync::Weak<AudioManager>>>>,
@@ -99,12 +99,12 @@ impl AudioManager {
         let pulse = Arc::new(pulse);
         let device_manager = Arc::new(RwLock::new(DeviceManager::default()));
 
-        // 加载持久化配置（禁用端口/用户偏好）
-        let config = AudioConfig::new();
+        // 加载持久化配置（禁用端口/用户偏好/音量静音）
+        let config = Arc::new(AudioConfig::new());
         config.load();
 
         // 启动前先查询当前音频状态，填充 DeviceManager 并注册 D-Bus 子对象
-        init_devices(&pulse, &device_manager, &connection)?;
+        init_devices(&pulse, &device_manager, &connection, &config)?;
 
         // 应用持久化配置（需 DeviceManager 已有 cards 做卡名→id 映射）
         config.apply_to(&mut *device_manager.write());
@@ -128,6 +128,7 @@ impl AudioManager {
             connection.clone(),
             events,
             on_card_event,
+            config.clone(),
         );
 
         // dconfig 类型优先级：
@@ -211,6 +212,8 @@ impl AudioManager {
         };
         // 恢复 dconfig 持久化的模块状态（mono/降噪）
         mgr.restore_module_states();
+        // 恢复持久化的音量/平衡/全局静音
+        mgr.restore_volume_states();
         Ok(mgr)
     }
 
@@ -421,6 +424,77 @@ impl AudioManager {
         Ok(())
      }
 
+    /// 启动时恢复各设备当前活动端口的持久化音量/平衡与全局静音。
+    ///
+    /// 在设备初始化与 `restore_module_states` 之后调用：此时 DeviceManager
+    /// 已填充设备状态，按卡名+端口名读取配置并应用到 pulse。
+    pub fn restore_volume_states(&self) {
+        use crate::backend::pulse::sink as pulse_sink;
+        use crate::backend::pulse::source as pulse_source;
+
+        // 输出静音（全局）
+        if self.config.mute(false) {
+            let sinks: Vec<u32> = {
+                let dm = self.device_manager.read();
+                dm.sinks.keys().copied().collect()
+            };
+            for idx in sinks {
+                let _ = pulse_sink::set_mute(&self.pulse, idx, true);
+            }
+        }
+        // 输入静音（全局）
+        if self.config.mute(true) {
+            let sources: Vec<u32> = {
+                let dm = self.device_manager.read();
+                dm.sources.keys().copied().collect()
+            };
+            for idx in sources {
+                let _ = pulse_source::set_mute(&self.pulse, idx, true);
+            }
+        }
+
+        // 各 sink 恢复活动端口音量/平衡
+        let sinks: Vec<(u32, String, String)> = {
+            let dm = self.device_manager.read();
+            dm.sinks
+                .values()
+                .filter_map(|s| {
+                    let card = dm.cards.get(&s.card)?;
+                    if s.active_port.name.is_empty() {
+                        return None;
+                    }
+                    Some((s.index, card.name.clone(), s.active_port.name.clone()))
+                })
+                .collect()
+        };
+        for (idx, card_name, port_name) in sinks {
+            let st = self.config.port_state(&card_name, &port_name);
+            let _ = pulse_sink::set_volume(&self.pulse, idx, st.volume, false);
+            let _ = pulse_sink::set_balance(&self.pulse, idx, st.balance, false);
+        }
+
+        // 各 source 恢复活动端口音量/平衡
+        let sources: Vec<(u32, String, String)> = {
+            let dm = self.device_manager.read();
+            dm.sources
+                .values()
+                .filter_map(|s| {
+                    let card = dm.cards.get(&s.card)?;
+                    if s.active_port.name.is_empty() {
+                        return None;
+                    }
+                    Some((s.index, card.name.clone(), s.active_port.name.clone()))
+                })
+                .collect()
+        };
+        for (idx, card_name, port_name) in sources {
+            let st = self.config.port_state(&card_name, &port_name);
+            let _ = pulse_source::set_volume(&self.pulse, idx, st.volume, false);
+            let _ = pulse_source::set_balance(&self.pulse, idx, st.balance, false);
+        }
+        eprintln!("[dde-audio] restored volume/mute states");
+    }
+
     /// 设置音量增强开关（内存 + dconfig 持久化）。
     ///
     /// 开启时 `MaxUIVolume` 从 1.0 提到 1.5（与 Go 版 increaseMaxVolume 一致）。
@@ -565,7 +639,7 @@ impl AudioManager {
             }
         }
         // 实际端口设置逻辑已迁入 card 模块（R1 等待 / profile 切换 / 设端口）
-        card::set_port(&self.pulse, &self.device_manager, card_id, port_name, direction, cancel)
+        card::set_port(&self.pulse, &self.device_manager, &self.config, card_id, port_name, direction, cancel)
     }
 
     /// 自动切换端口：按优先级选输出/输入优选端口并设置。
@@ -838,6 +912,7 @@ fn init_devices(
     pulse: &Arc<PulseManager>,
     device_manager: &Arc<RwLock<DeviceManager>>,
     connection: &zbus::blocking::Connection,
+    config: &Arc<AudioConfig>,
 ) -> Result<(), String> {
     use crate::backend::pulse::{card, sink, sink_input, source};
     use crate::manager::sink::SinkInterface;
@@ -855,7 +930,7 @@ fn init_devices(
         let index = state.index;
         let state: crate::manager::sink::Sink = state.into();
         device_manager.write().add_sink(index, state);
-        let obj = SinkInterface::new_instance(index, pulse.clone(), device_manager.clone(), connection.clone());
+        let obj = SinkInterface::new_instance(index, pulse.clone(), device_manager.clone(), connection.clone(), config.clone());
         connection
             .object_server()
             .at(SinkInterface::path(index), obj)
@@ -867,7 +942,7 @@ fn init_devices(
         let index = state.index;
         let state: crate::manager::source::Source = state.into();
         device_manager.write().add_source(index, state);
-        let obj = SourceInterface::new_instance(index, pulse.clone(), device_manager.clone(), connection.clone());
+        let obj = SourceInterface::new_instance(index, pulse.clone(), device_manager.clone(), connection.clone(), config.clone());
         connection
             .object_server()
             .at(SourceInterface::path(index), obj)
@@ -879,7 +954,7 @@ fn init_devices(
         let index = state.index;
         let state: crate::manager::sink_input::SinkInput = state.into();
         device_manager.write().add_sink_input(index, state);
-        let obj = SinkInputInterface::new_instance(index, pulse.clone(), device_manager.clone(), connection.clone());
+        let obj = SinkInputInterface::new_instance(index, pulse.clone(), device_manager.clone(), connection.clone(), config.clone());
         connection
             .object_server()
             .at(SinkInputInterface::path(index), obj)

@@ -68,6 +68,8 @@ pub struct SourceInterface {
     pulse: Arc<PulseManager>,
     device_manager: Arc<RwLock<DeviceManager>>,
     connection: zbus::blocking::Connection,
+    /// 配置持久化（音量/静音/端口状态）。
+    config: Arc<super::config::AudioConfig>,
 }
 
 impl SourceInterface {
@@ -77,10 +79,10 @@ impl SourceInterface {
         pulse: Arc<PulseManager>,
         device_manager: Arc<RwLock<DeviceManager>>,
         connection: zbus::blocking::Connection,
+        config: Arc<super::config::AudioConfig>,
     ) -> Self {
-        Self { index, pulse, device_manager, connection }
+        Self { index, pulse, device_manager, connection, config }
     }
-
     /// 生成 Source 的 D-Bus 对象路径。
     pub fn path(index: u32) -> String {
         format!("/org/deepin/dde/Audio1/Source{index}")
@@ -89,6 +91,17 @@ impl SourceInterface {
     fn state(&self) -> Option<Source> {
         let reg = self.device_manager.read();
         reg.sources.get(&self.index).cloned()
+    }
+
+    /// 当前卡名与活动端口名（持久化键）。
+    fn config_key(&self) -> Option<(String, String)> {
+        let reg = self.device_manager.read();
+        let s = reg.sources.get(&self.index)?;
+        let card = reg.cards.get(&s.card)?;
+        if s.active_port.name.is_empty() {
+            return None;
+        }
+        Some((card.name.clone(), s.active_port.name.clone()))
     }
 }
 
@@ -99,19 +112,20 @@ impl SourceInterface {
         pulse: &Arc<PulseManager>,
         device_manager: &Arc<RwLock<DeviceManager>>,
         connection: &zbus::blocking::Connection,
+        config: Arc<super::config::AudioConfig>,
         index: u32,
     ) -> Result<(), String> {
         let state: Source = pulse_source::query_info(pulse, index)?.into();
         device_manager.write().add_source(index, state);
         eprintln!("[dde-audio] source new: {index}");
-
-        let obj = Self::new_instance(index, pulse.clone(), device_manager.clone(), connection.clone());
+        let obj = Self::new_instance(index, pulse.clone(), device_manager.clone(), connection.clone(), config);
         connection
             .object_server()
             .at(Self::path(index), obj)
             .map_err(|e| format!("register source {index} failed: {e}"))?;
         Ok(())
     }
+
 
     /// Source 更新：查询最新状态写入 DeviceManager。
     pub fn update(
@@ -247,7 +261,11 @@ impl SourceInterface {
 
     fn set_balance(&self, value: f64, is_play: bool) -> zbus::fdo::Result<()> {
         pulse_source::set_balance(&self.pulse, self.index, value, is_play)
-            .map_err(|e| zbus::fdo::Error::Failed(e))
+            .map_err(|e| zbus::fdo::Error::Failed(e))?;
+        if let Some((card, port)) = self.config_key() {
+            self.config.set_port_balance(&card, &port, value);
+        }
+        Ok(())
     }
 
     fn set_fade(&self, value: f64) -> zbus::fdo::Result<()> {
@@ -257,7 +275,9 @@ impl SourceInterface {
 
     fn set_mute(&self, value: bool) -> zbus::fdo::Result<()> {
         pulse_source::set_mute(&self.pulse, self.index, value)
-            .map_err(|e| zbus::fdo::Error::Failed(e))
+            .map_err(|e| zbus::fdo::Error::Failed(e))?;
+        self.config.set_mute(true, value);
+        Ok(())
     }
 
     fn set_port(&self, name: &str) -> zbus::fdo::Result<()> {
@@ -267,6 +287,10 @@ impl SourceInterface {
 
     fn set_volume(&self, value: f64, is_play: bool) -> zbus::fdo::Result<()> {
         pulse_source::set_volume(&self.pulse, self.index, value, is_play)
-            .map_err(|e| zbus::fdo::Error::Failed(e))
+            .map_err(|e| zbus::fdo::Error::Failed(e))?;
+        if let Some((card, port)) = self.config_key() {
+            self.config.set_port_volume(&card, &port, value);
+        }
+        Ok(())
     }
 }

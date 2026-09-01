@@ -81,6 +81,8 @@ pub struct SinkInterface {
     pulse: Arc<PulseManager>,
     device_manager: Arc<RwLock<DeviceManager>>,
     connection: zbus::blocking::Connection,
+    /// 配置持久化（音量/静音/端口状态）。
+    config: Arc<super::config::AudioConfig>,
 }
 
 impl SinkInterface {
@@ -89,8 +91,9 @@ impl SinkInterface {
         pulse: Arc<PulseManager>,
         device_manager: Arc<RwLock<DeviceManager>>,
         connection: zbus::blocking::Connection,
+        config: Arc<super::config::AudioConfig>,
     ) -> Self {
-        Self { index, pulse, device_manager, connection }
+        Self { index, pulse, device_manager, connection, config }
     }
 
     /// 生成 Sink 的 D-Bus 对象路径。
@@ -102,8 +105,18 @@ impl SinkInterface {
         let reg = self.device_manager.read();
         reg.sinks.get(&self.index).cloned()
     }
-}
 
+    /// 当前卡名与活动端口名（持久化键）。
+    fn config_key(&self) -> Option<(String, String)> {
+        let reg = self.device_manager.read();
+        let s = reg.sinks.get(&self.index)?;
+        let card = reg.cards.get(&s.card)?;
+        if s.active_port.name.is_empty() {
+            return None;
+        }
+        Some((card.name.clone(), s.active_port.name.clone()))
+    }
+}
 /// Sink 设备生命周期（事件处理入口，由 event_loop 调用）。
 impl SinkInterface {
     /// Sink 新增：查询状态写入 DeviceManager，注册 D-Bus 对象。
@@ -113,18 +126,19 @@ impl SinkInterface {
         pulse: &Arc<PulseManager>,
         device_manager: &Arc<RwLock<DeviceManager>>,
         connection: &zbus::blocking::Connection,
+        config: Arc<super::config::AudioConfig>,
         index: u32,
     ) -> Result<(), String> {
         let state: Sink = pulse_sink::query_info(pulse, index)?.into();
         device_manager.write().add_sink(index, state);
-        eprintln!("[dde-audio] sink new: {index}");
-        let obj = Self::new_instance(index, pulse.clone(), device_manager.clone(), connection.clone());
+        let obj = Self::new_instance(index, pulse.clone(), device_manager.clone(), connection.clone(), config);
         connection
             .object_server()
             .at(Self::path(index), obj)
             .map_err(|e| format!("register sink {index} failed: {e}"))?;
         Ok(())
     }
+
 
     /// Sink 更新：查询最新状态写入 DeviceManager。
     ///
@@ -259,7 +273,11 @@ impl SinkInterface {
 
     fn set_balance(&self, value: f64, is_play: bool) -> zbus::fdo::Result<()> {
         pulse_sink::set_balance(&self.pulse, self.index, value, is_play)
-            .map_err(|e| zbus::fdo::Error::Failed(e))
+            .map_err(|e| zbus::fdo::Error::Failed(e))?;
+        if let Some((card, port)) = self.config_key() {
+            self.config.set_port_balance(&card, &port, value);
+        }
+        Ok(())
     }
 
     fn set_fade(&self, value: f64) -> zbus::fdo::Result<()> {
@@ -269,7 +287,9 @@ impl SinkInterface {
 
     fn set_mute(&self, value: bool) -> zbus::fdo::Result<()> {
         pulse_sink::set_mute(&self.pulse, self.index, value)
-            .map_err(|e| zbus::fdo::Error::Failed(e))
+            .map_err(|e| zbus::fdo::Error::Failed(e))?;
+        self.config.set_mute(false, value);
+        Ok(())
     }
 
     fn set_port(&self, name: &str) -> zbus::fdo::Result<()> {
@@ -279,6 +299,10 @@ impl SinkInterface {
 
     fn set_volume(&self, value: f64, is_play: bool) -> zbus::fdo::Result<()> {
         pulse_sink::set_volume(&self.pulse, self.index, value, is_play)
-            .map_err(|e| zbus::fdo::Error::Failed(e))
+            .map_err(|e| zbus::fdo::Error::Failed(e))?;
+        if let Some((card, port)) = self.config_key() {
+            self.config.set_port_volume(&card, &port, value);
+        }
+        Ok(())
     }
 }

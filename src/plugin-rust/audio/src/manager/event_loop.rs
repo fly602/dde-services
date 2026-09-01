@@ -307,6 +307,7 @@ impl EventLoop {
         connection: zbus::blocking::Connection,
         events: crossbeam_channel::Receiver<PulseEvent>,
         on_card_event: Option<Arc<dyn Fn() + Send + Sync>>,
+        config: Arc<super::config::AudioConfig>,
     ) -> Self {
         // 自动切换 worker 线程：
         // EventLoop 线程只做轻量状态更新，真正的 auto_switch_ports
@@ -353,6 +354,7 @@ impl EventLoop {
             eprintln!("[dde-audio] auto-switch worker exited");
         });
         let event_shutdown = shutdown.clone();
+        let event_config = config.clone();
         let handle = thread::spawn(move || {
             loop {
                 // 轮询：收到关闭信号则退出；否则等事件（100ms 超时以响应关闭）
@@ -366,7 +368,7 @@ impl EventLoop {
                 };
                 match event {
                     PulseEvent::SinkAdded { index } => {
-                        let _ = SinkInterface::new(&pulse, &device_manager, &connection, index);
+                        let _ = SinkInterface::new(&pulse, &device_manager, &connection, event_config.clone(), index);
                         try_complete_pending_profile(&device_manager, index, true, &switch_tx);
                         emit_audio_list_changed(&connection, &device_manager, &["Sinks"]);
                     }
@@ -388,7 +390,7 @@ impl EventLoop {
                         emit_audio_list_changed(&connection, &device_manager, &["Sinks"]);
                     }
                     PulseEvent::SourceAdded { index } => {
-                        let _ = SourceInterface::new(&pulse, &device_manager, &connection, index);
+                        let _ = SourceInterface::new(&pulse, &device_manager, &connection, event_config.clone(), index);
                         try_complete_pending_profile(&device_manager, index, false, &switch_tx);
                         emit_audio_list_changed(&connection, &device_manager, &["Sources"]);
                     }
@@ -410,7 +412,7 @@ impl EventLoop {
                         emit_audio_list_changed(&connection, &device_manager, &["Sources"]);
                     }
                     PulseEvent::SinkInputAdded { index } => {
-                        let _ = SinkInputInterface::new(&pulse, &device_manager, &connection, index);
+                        let _ = SinkInputInterface::new(&pulse, &device_manager, &connection, event_config.clone(), index);
                         emit_audio_list_changed(&connection, &device_manager, &["SinkInputs"]);
                     }
                     PulseEvent::SinkInputChanged { index } => {

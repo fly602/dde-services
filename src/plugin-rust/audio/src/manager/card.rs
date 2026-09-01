@@ -450,6 +450,7 @@ pub fn switch_card_profile(
 pub fn set_port(
     pulse: &Arc<PulseManager>,
     device_manager: &Arc<RwLock<DeviceManager>>,
+    config: &Arc<super::config::AudioConfig>,
     card_id: u32,
     port_name: &str,
     direction: u32,
@@ -540,11 +541,14 @@ pub fn set_port(
         };
         if has_port {
             eprintln!("[dde-audio] set_port: device {index} already has port {port_name}, set directly");
-            return if direction == 1 {
+            let r = if direction == 1 {
                 pulse_sink::set_port(pulse, index, port_name)
             } else {
                 pulse_source::set_port(pulse, index, port_name)
             };
+            r?;
+            apply_saved_state(pulse, device_manager, config, card_id, port_name, index, direction);
+            return Ok(());
         }
     }
 
@@ -589,8 +593,46 @@ pub fn set_port(
     };
 
     match device_index {
-        Some(index) if direction == 1 => pulse_sink::set_port(pulse, index, port_name),
-        Some(index) => pulse_source::set_port(pulse, index, port_name),
+        Some(index) => {
+            let r = if direction == 1 {
+                pulse_sink::set_port(pulse, index, port_name)
+            } else {
+                pulse_source::set_port(pulse, index, port_name)
+            };
+            r?;
+            apply_saved_state(pulse, device_manager, config, card_id, port_name, index, direction);
+            Ok(())
+        }
         None => Err(format!("no device for card {card_id}")),
+    }
+}
+
+/// 端口设置成功后，恢复该端口持久化的音量与平衡（Go 版 GetConfigKeeper 语义）。
+fn apply_saved_state(
+    pulse: &Arc<PulseManager>,
+    device_manager: &Arc<RwLock<DeviceManager>>,
+    config: &Arc<super::config::AudioConfig>,
+    card_id: u32,
+    port_name: &str,
+    device_index: u32,
+    direction: u32,
+) {
+    use crate::backend::pulse::sink as pulse_sink;
+    use crate::backend::pulse::source as pulse_source;
+    // 卡名
+    let card_name = {
+        let dm = device_manager.read();
+        dm.cards.get(&card_id).map(|c| c.name.clone())
+    };
+    let Some(card_name) = card_name else {
+        return;
+    };
+    let st = config.port_state(&card_name, port_name);
+    if direction == 1 {
+        let _ = pulse_sink::set_volume(pulse, device_index, st.volume, false);
+        let _ = pulse_sink::set_balance(pulse, device_index, st.balance, false);
+    } else {
+        let _ = pulse_source::set_volume(pulse, device_index, st.volume, false);
+        let _ = pulse_source::set_balance(pulse, device_index, st.balance, false);
     }
 }

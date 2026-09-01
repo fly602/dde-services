@@ -53,17 +53,20 @@ pub struct SinkInputInterface {
     device_manager: Arc<RwLock<DeviceManager>>,
     #[allow(dead_code)]
     connection: zbus::blocking::Connection,
+    /// 配置持久化（与 Sink/Source 接口对齐）。
+    #[allow(dead_code)]
+    config: Arc<super::config::AudioConfig>,
 }
 
 impl SinkInputInterface {
-    /// 构造 SinkInput D-Bus 对象实例（关联函数，由注册逻辑调用）。
     pub fn new_instance(
         index: u32,
         pulse: Arc<PulseManager>,
         device_manager: Arc<RwLock<DeviceManager>>,
         connection: zbus::blocking::Connection,
+        config: Arc<super::config::AudioConfig>,
     ) -> Self {
-        Self { index, pulse, device_manager, connection }
+        Self { index, pulse, device_manager, connection, config }
     }
 
     /// 生成 SinkInput 的 D-Bus 对象路径。
@@ -84,19 +87,20 @@ impl SinkInputInterface {
         pulse: &Arc<PulseManager>,
         device_manager: &Arc<RwLock<DeviceManager>>,
         connection: &zbus::blocking::Connection,
+        config: Arc<super::config::AudioConfig>,
         index: u32,
     ) -> Result<(), String> {
         let state: SinkInput = pulse_sink_input::query_info(pulse, index)?.into();
         device_manager.write().add_sink_input(index, state);
         eprintln!("[dde-audio] sink input new: {index}");
-
-        let obj = Self::new_instance(index, pulse.clone(), device_manager.clone(), connection.clone());
+        let obj = Self::new_instance(index, pulse.clone(), device_manager.clone(), connection.clone(), config);
         connection
             .object_server()
             .at(Self::path(index), obj)
             .map_err(|e| format!("register sink input {index} failed: {e}"))?;
         Ok(())
     }
+
 
     /// SinkInput 更新：查询最新状态写入 DeviceManager。
     pub fn update(
